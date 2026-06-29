@@ -1,0 +1,12 @@
+aws_region         = "us-east-1"
+environment        = "production"
+name_prefix        = "cr-agentic"
+course_rep_api_url = "https://api.courserep.example.com"
+
+# Supply an ACM certificate ARN to enable the HTTPS listener.
+certificate_arn = ""
+
+# Optional sizing overrides
+# agent_api_desired_count = 2
+# worker_desired_count    = 1
+# image_tag               = "latest"

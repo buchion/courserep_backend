@@ -1,0 +1,27 @@
+{
+  "name": "cr-agentic",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "yarn workspaces foreach -Apt run build",
+    "build:packages": "yarn workspace @cr-agentic/config build && yarn workspace @cr-agentic/shared build && yarn workspace @cr-agentic/database build && yarn workspace @cr-agentic/agent-core build && yarn workspace @cr-agentic/queue build && yarn workspace @cr-agentic/storage build && yarn workspace @cr-agentic/observability build && yarn workspace @cr-agentic/lms-adapters build && yarn workspace @cr-agentic/portal-discovery build",
+    "dev:agent-api": "yarn workspace @cr-agentic/agent-api start:dev",
+    "dev:browser-worker": "yarn workspace @cr-agentic/browser-worker dev",
+    "dev:ai-worker": "yarn workspace @cr-agentic/ai-worker dev",
+    "db:generate": "yarn workspace @cr-agentic/database prisma:generate",
+    "db:migrate": "yarn workspace @cr-agentic/database prisma:migrate",
+    "db:push": "yarn workspace @cr-agentic/database prisma:push",
+    "lint": "eslint \"{apps,packages}/**/*.ts\" --fix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

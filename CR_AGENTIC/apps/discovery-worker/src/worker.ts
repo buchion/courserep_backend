@@ -1,0 +1,76 @@
+import 'dotenv/config';
+import { Job } from 'bullmq';
+import { loadAgentEnv } from '@cr-agentic/config';
+import { createRedisConnection, createWorker, moveToDlq } from '@cr-agentic/queue';
+import { QUEUE_NAMES } from '@cr-agentic/shared';
+import type { DiscoveryFindPortalJob, DiscoveryDeepScrapeJob } from '@cr-agentic/shared';
+import { createLogger, metrics } from '@cr-agentic/observability';
+import {
+  PortalDiscoveryService,
+  SerperSearchClient,
+  OpenAiCompletionClient,
+} from '@cr-agentic/portal-discovery';
+import { FindPortalProcessor } from './processors/find-portal.processor';
+import { DeepScrapeProcessor } from './processors/deep-scrape.processor';
+import { createDiscoveryBrowser } from './browser/discovery-browser';
+
+const logger = createLogger('discovery-worker');
+
+async function main() {
+  const env = loadAgentEnv();
+  const redis = createRedisConnection();
+
+  const search = new SerperSearchClient(
+    env.PORTAL_SEARCH_API_KEY,
+    env.PORTAL_SEARCH_ENDPOINT,
+  );
+  const llm = new OpenAiCompletionClient(env.OPENAI_API_KEY, env.OPENAI_MODEL);
+  const discovery = new PortalDiscoveryService(search, llm);
+  const findPortal = new FindPortalProcessor(discovery);
+
+  const browser = createDiscoveryBrowser();
+  const deepScrape = new DeepScrapeProcessor(redis, browser, llm);
+
+  const workers = [
+    createWorker<DiscoveryFindPortalJob>(
+      QUEUE_NAMES.DISCOVERY_FIND_PORTAL,
+      async (job) => {
+        metrics.increment('discovery.find_portal.started');
+        await findPortal.process(job);
+        metrics.increment('discovery.find_portal.completed');
+      },
+    ),
+    createWorker<DiscoveryDeepScrapeJob>(
+      QUEUE_NAMES.DISCOVERY_DEEP_SCRAPE,
+      async (job) => {
+        metrics.increment('discovery.deep_scrape.started');
+        await deepScrape.process(job);
+        metrics.increment('discovery.deep_scrape.completed');
+      },
+    ),
+  ];
+
+  for (const worker of workers) {
+    worker.on('failed', async (job: Job | undefined, err: Error) => {
+      logger.error({ jobId: job?.id, err: err.message }, 'Discovery job failed');
+      if (job && (job.attemptsMade ?? 0) >= (job.opts.attempts ?? 1)) {
+        await moveToDlq(redis, worker.name, String(job.id), job.data, err);
+      }
+    });
+  }
+
+  logger.info('Discovery worker started');
+
+  const shutdown = async () => {
+    await Promise.all(workers.map((w) => w.close()));
+    await browser.shutdown();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+main().catch((err) => {
+  logger.error({ err }, 'Discovery worker crashed');
+  process.exit(1);
+});

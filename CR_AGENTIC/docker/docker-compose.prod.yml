@@ -1,0 +1,128 @@
+# CR_AGENTIC – single-VM production stack ("deploy once").
+#
+# Brings up Postgres, Redis, the agent API, and all workers on one host.
+# A one-shot `migrate` service runs Prisma migrations before any app
+# container starts, so a fresh box is fully provisioned by:
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Object storage (sessions + documents) uses real AWS S3. Give the EC2
+# instance an IAM role with access to AWS_S3_BUCKET, or set static keys
+# in .env. Run all commands from the CR_AGENTIC/docker directory with a
+# populated ../.env (see .env.prod.example).
+
+x-agent-db-env: &agent-db-env
+  AGENT_DATABASE_URL: postgresql://agent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@agent-postgres:5432/cr_agent?schema=public
+  REDIS_HOST: agent-redis
+  REDIS_PORT: 6379
+
+x-app-base: &app-base
+  env_file:
+    - ../.env
+  restart: unless-stopped
+  networks:
+    - agent-net
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    agent-redis:
+      condition: service_started
+
+services:
+  agent-postgres:
+    image: postgres:16-alpine
+    container_name: cr-agent-postgres
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: cr_agent
+    volumes:
+      - agent-postgres-data:/var/lib/postgresql/data
+    networks:
+      - agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d cr_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  agent-redis:
+    image: redis:7-alpine
+    container_name: cr-agent-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - agent-redis-data:/data
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+  # One-shot: applies Prisma migrations, then exits 0. All app services
+  # wait for this to complete successfully before starting.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/agent-api.Dockerfile
+    image: cr-agentic/agent-api:latest
+    container_name: cr-agent-migrate
+    environment:
+      <<: *agent-db-env
+    command: ["yarn", "workspace", "@cr-agentic/database", "prisma:migrate:deploy"]
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+    networks:
+      - agent-net
+    restart: "no"
+
+  agent-api:
+    <<: *app-base
+    build:
+      context: ..
+      dockerfile: docker/agent-api.Dockerfile
+    image: cr-agentic/agent-api:latest
+    container_name: cr-agent-api
+    environment:
+      <<: *agent-db-env
+    ports:
+      - "3100:3100"
+
+  browser-worker:
+    <<: *app-base
+    build:
+      context: ..
+      dockerfile: docker/playwright.Dockerfile
+    image: cr-agentic/browser-worker:latest
+    container_name: cr-browser-worker
+    environment:
+      <<: *agent-db-env
+    shm_size: '2gb'
+
+  ai-worker:
+    <<: *app-base
+    build:
+      context: ..
+      dockerfile: docker/ai-worker.Dockerfile
+    image: cr-agentic/ai-worker:latest
+    container_name: cr-ai-worker
+    environment:
+      <<: *agent-db-env
+
+  discovery-worker:
+    <<: *app-base
+    build:
+      context: ..
+      dockerfile: docker/discovery-worker.Dockerfile
+    image: cr-agentic/discovery-worker:latest
+    container_name: cr-discovery-worker
+    environment:
+      <<: *agent-db-env
+    shm_size: '2gb'
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  agent-postgres-data:
+  agent-redis-data:

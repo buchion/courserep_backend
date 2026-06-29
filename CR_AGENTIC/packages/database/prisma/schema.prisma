@@ -1,0 +1,580 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("AGENT_DATABASE_URL")
+}
+
+enum ConnectedAccountStatus {
+  PENDING
+  ACTIVE
+  REAUTH_REQUIRED
+  REVOKED
+}
+
+enum LmsType {
+  GENERIC
+  CANVAS
+  MOODLE
+  BLACKBOARD
+  BRIGHTSPACE
+  GOOGLE_CLASSROOM
+}
+
+enum BrowserSessionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum AgentTaskType {
+  CONNECT_LMS
+  REFRESH_SESSION
+  LMS_CHECK
+  LMS_DOWNLOAD
+  PROCESS_DOCUMENT
+  SUMMARIZE
+  GENERATE_FLASHCARDS
+  GENERATE_QUIZ
+  UPDATE_STUDY_PLAN
+  SEND_NOTIFICATION
+  MANUAL_SYNC
+  DISCOVER_PORTAL
+  DEEP_ACADEMIC_DISCOVERY
+  SYNC_TO_MAIN
+}
+
+enum OnboardingStage {
+  UNIVERSITY_SELECTED
+  PORTAL_DISCOVERING
+  PORTAL_SUGGESTED
+  PORTAL_CONFIRMED
+  AWAITING_LOGIN
+  LOGIN_IN_PROGRESS
+  SESSION_CAPTURED
+  DEEP_DISCOVERY
+  ONBOARDING_COMPLETE
+  REAUTH_REQUIRED
+  CANCELLED
+  FAILED
+}
+
+enum PortalCandidateSource {
+  WEB_SEARCH
+  UNIVERSITY_CACHE
+  MANUAL
+  OPS_OVERRIDE
+}
+
+enum DiscoveryStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETE
+  FAILED
+}
+
+enum AgentTaskStatus {
+  PENDING
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TaskRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum DownloadStatus {
+  PENDING
+  DOWNLOADING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+enum DocumentProcessingStatus {
+  PENDING
+  EXTRACTING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum MemoryCategory {
+  PREFERENCES
+  COURSES
+  WEAK_TOPICS
+  STRONG_TOPICS
+  STUDY_SCHEDULE
+  LEARNING_HISTORY
+  AGENT_OBSERVATIONS
+  NOTIFICATION_HISTORY
+}
+
+enum AgentEventType {
+  LectureUploaded
+  DocumentProcessed
+  FlashcardsGenerated
+  QuizGenerated
+  StudyPlanUpdated
+  AssignmentDue
+  ExamApproaching
+  NewAnnouncement
+  SessionExpired
+  QuizCompleted
+}
+
+enum AgentEventStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  IN_APP
+}
+
+enum AgentNotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model ConnectedAccount {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  userId              String                 @db.Uuid
+  universityId        String?                @db.Uuid
+  lmsType             LmsType
+  lmsBaseUrl          String
+  status              ConnectedAccountStatus @default(PENDING)
+  discoveryStatus     DiscoveryStatus        @default(NOT_STARTED)
+  onboardingSessionId String?                @db.Uuid
+  portalCandidateId   String?                @db.Uuid
+  metadata            Json?
+  lastSyncAt          DateTime?
+  syncCursor          String?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  browserSessions  BrowserSession[]
+  agentTasks       AgentTask[]
+  lectureMaterials LectureMaterial[]
+  memoryEntries    AgentMemoryEntry[]
+  notifications    AgentNotification[]
+
+  onboardingSession OnboardingSession? @relation(fields: [onboardingSessionId], references: [id], onDelete: SetNull)
+  portalCandidate   PortalCandidate?   @relation(fields: [portalCandidateId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([universityId])
+  @@map("connected_accounts")
+}
+
+model BrowserSession {
+  id                 String               @id @default(uuid()) @db.Uuid
+  connectedAccountId String               @db.Uuid
+  storageStateS3Key  String
+  encryptionKeyId    String               @default("default")
+  expiresAt          DateTime
+  lastValidatedAt    DateTime?
+  status             BrowserSessionStatus @default(ACTIVE)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@index([connectedAccountId, status])
+  @@map("browser_sessions")
+}
+
+model AgentTask {
+  id                 String          @id @default(uuid()) @db.Uuid
+  connectedAccountId String?         @db.Uuid
+  userId             String          @db.Uuid
+  taskType           AgentTaskType
+  status             AgentTaskStatus @default(PENDING)
+  priority           Int             @default(0)
+  payload            Json?
+  plan               Json?
+  idempotencyKey     String?         @unique
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  connectedAccount ConnectedAccount? @relation(fields: [connectedAccountId], references: [id], onDelete: SetNull)
+  taskRuns         TaskRun[]
+  events           AgentEvent[]
+
+  @@index([userId])
+  @@index([connectedAccountId, status])
+  @@index([taskType, status])
+  @@map("agent_tasks")
+}
+
+model TaskRun {
+  id               String        @id @default(uuid()) @db.Uuid
+  agentTaskId      String        @db.Uuid
+  status           TaskRunStatus @default(PENDING)
+  attempt          Int           @default(1)
+  workerId         String?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  result           Json?
+  error            Json?
+  screenshotS3Keys String[]      @default([])
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  agentTask AgentTask @relation(fields: [agentTaskId], references: [id], onDelete: Cascade)
+
+  @@index([agentTaskId])
+  @@index([status])
+  @@map("task_runs")
+}
+
+model LectureMaterial {
+  id                 String         @id @default(uuid()) @db.Uuid
+  connectedAccountId String         @db.Uuid
+  externalId         String
+  externalUrl        String?
+  title              String
+  mimeType           String?
+  courseExternalId   String?
+  courseTitle        String?
+  detectedAt         DateTime       @default(now())
+  downloadStatus     DownloadStatus @default(PENDING)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  document         AgentDocument?
+
+  @@unique([connectedAccountId, externalId])
+  @@index([connectedAccountId, downloadStatus])
+  @@map("lecture_materials")
+}
+
+model AgentDocument {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  lectureMaterialId  String                   @unique @db.Uuid
+  s3Key              String
+  checksum           String?
+  pageCount          Int?
+  fileSizeBytes      Int?
+  mimeType           String?
+  extractedMetadata  Json?
+  processingStatus   DocumentProcessingStatus @default(PENDING)
+  mainMaterialId     String?                  @db.Uuid
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  lectureMaterial LectureMaterial @relation(fields: [lectureMaterialId], references: [id], onDelete: Cascade)
+  summary         Summary?
+  flashcards      AgentFlashcard[]
+  quizzes         AgentQuiz[]
+
+  @@index([processingStatus])
+  @@map("agent_documents")
+}
+
+model Summary {
+  id          String   @id @default(uuid()) @db.Uuid
+  documentId  String   @unique @db.Uuid
+  content     String   @db.Text
+  model       String
+  tokenUsage  Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  document AgentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("summaries")
+}
+
+model AgentFlashcard {
+  id               String   @id @default(uuid()) @db.Uuid
+  documentId       String   @db.Uuid
+  question         String   @db.Text
+  answer           String   @db.Text
+  explanation      String?  @db.Text
+  topic            String?
+  difficulty       String?
+  mainFlashcardId  String?  @db.Uuid
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  document AgentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("agent_flashcards")
+}
+
+model AgentQuiz {
+  id              String   @id @default(uuid()) @db.Uuid
+  documentId      String   @db.Uuid
+  questions       Json
+  mainQuestionIds String[] @default([])
+  model           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  document AgentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("agent_quizzes")
+}
+
+model AgentMemoryEntry {
+  id                 String         @id @default(uuid()) @db.Uuid
+  userId             String         @db.Uuid
+  connectedAccountId String?        @db.Uuid
+  category           MemoryCategory
+  key                String
+  value              Json
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  connectedAccount ConnectedAccount? @relation(fields: [connectedAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, category, key])
+  @@index([userId, category])
+  @@map("agent_memory_entries")
+}
+
+model AgentEvent {
+  id          String           @id @default(uuid()) @db.Uuid
+  eventType   AgentEventType
+  aggregateId String
+  userId      String           @db.Uuid
+  agentTaskId String?          @db.Uuid
+  payload     Json
+  status      AgentEventStatus @default(PENDING)
+  publishedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  agentTask AgentTask? @relation(fields: [agentTaskId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([userId])
+  @@index([eventType])
+  @@map("agent_events")
+}
+
+model AgentNotification {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  userId             String                  @db.Uuid
+  connectedAccountId String?                 @db.Uuid
+  channel            NotificationChannel     @default(IN_APP)
+  title              String
+  message            String                  @db.Text
+  status             AgentNotificationStatus @default(PENDING)
+  mainNotificationId String?                 @db.Uuid
+  dedupeKey          String?
+  metadata           Json?
+  sentAt             DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  connectedAccount ConnectedAccount? @relation(fields: [connectedAccountId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@map("agent_notifications")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  actorId      String?  @db.Uuid
+  action       String
+  resourceType String
+  resourceId   String?
+  ip           String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  eventType     String
+  aggregateId   String
+  payload       Json
+  published     Boolean   @default(false)
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([published, createdAt])
+  @@map("outbox_events")
+}
+
+model OnboardingSession {
+  id                String          @id @default(uuid()) @db.Uuid
+  userId            String          @db.Uuid
+  universityId      String?         @db.Uuid
+  universityName    String
+  country           String?
+  website           String?
+  departmentName    String?
+  academicLevelName String?
+  stage             OnboardingStage @default(UNIVERSITY_SELECTED)
+  selectedCandidateId String?       @db.Uuid
+  loginBridgeTokenHash String?
+  loginBridgeExpiresAt DateTime?
+  lastError         Json?
+  metadata          Json?
+  expiresAt         DateTime
+  completedAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  portalCandidates   PortalCandidate[]
+  discoveredCourses  DiscoveredCourse[]
+  academicRecords    DiscoveredAcademicRecord[]
+  calendarEvents     DiscoveredCalendarEvent[]
+  auditEvents        OnboardingAuditEvent[]
+  connectedAccounts  ConnectedAccount[]
+
+  @@index([userId, stage])
+  @@index([stage, expiresAt])
+  @@map("onboarding_sessions")
+}
+
+model PortalCandidate {
+  id                  String                @id @default(uuid()) @db.Uuid
+  onboardingSessionId String                @db.Uuid
+  loginUrl            String
+  portalName          String?
+  lmsType             LmsType               @default(GENERIC)
+  confidence          Float                 @default(0)
+  evidence            String[]              @default([])
+  source              PortalCandidateSource @default(WEB_SEARCH)
+  selected            Boolean               @default(false)
+  metadata            Json?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  onboardingSession OnboardingSession  @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+  connectedAccounts ConnectedAccount[]
+
+  @@index([onboardingSessionId, confidence])
+  @@map("portal_candidates")
+}
+
+model UniversityCache {
+  id                 String    @id @default(uuid()) @db.Uuid
+  universityId       String    @unique @db.Uuid
+  name               String
+  country            String?
+  website            String?
+  studentPortalUrl   String?
+  lmsType            LmsType?
+  portalDiscoveredAt DateTime?
+  hints              Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([name])
+  @@map("university_cache")
+}
+
+model PortalAdapterConfig {
+  id           String   @id @default(uuid()) @db.Uuid
+  universityId String?  @db.Uuid
+  lmsType      LmsType  @default(GENERIC)
+  loginUrl     String?
+  selectors    Json?
+  paths        Json?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([universityId, lmsType])
+  @@index([lmsType])
+  @@map("portal_adapter_configs")
+}
+
+model DiscoveredCourse {
+  id                  String   @id @default(uuid()) @db.Uuid
+  onboardingSessionId String   @db.Uuid
+  userId              String   @db.Uuid
+  externalId          String?
+  code                String?
+  title               String
+  units               Int?
+  semester            String?
+  instructor          String?
+  rawHtmlS3Key        String?
+  selected            Boolean  @default(true)
+  syncedAt            DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId])
+  @@index([userId])
+  @@map("discovered_courses")
+}
+
+model DiscoveredAcademicRecord {
+  id                  String   @id @default(uuid()) @db.Uuid
+  onboardingSessionId String   @db.Uuid
+  userId              String   @db.Uuid
+  cumulativeGpa       Float?
+  gradingScale        Json?
+  courseGrades        Json?
+  rawTextS3Key        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId])
+  @@map("discovered_academic_records")
+}
+
+model DiscoveredCalendarEvent {
+  id                  String    @id @default(uuid()) @db.Uuid
+  onboardingSessionId String    @db.Uuid
+  userId              String    @db.Uuid
+  title               String
+  eventType           String?
+  startsAt            DateTime?
+  endsAt              DateTime?
+  selected            Boolean   @default(true)
+  syncedAt            DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId])
+  @@map("discovered_calendar_events")
+}
+
+model OnboardingAuditEvent {
+  id                  String          @id @default(uuid()) @db.Uuid
+  onboardingSessionId String          @db.Uuid
+  fromStage           OnboardingStage?
+  toStage             OnboardingStage
+  detail              Json?
+  createdAt           DateTime        @default(now())
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId, createdAt])
+  @@map("onboarding_audit_events")
+}

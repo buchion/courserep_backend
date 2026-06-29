@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+*.tsbuildinfo
+
+# Env / secrets (keep the .example files)
+.env
+.env.*
+!.env.example
+!.env.prod.example
+
+# Prisma generated client
+packages/database/src/generated/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+
+# Terraform state
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

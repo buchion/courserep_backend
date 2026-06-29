@@ -1,0 +1,117 @@
+services:
+  agent-postgres:
+    image: postgres:16-alpine
+    container_name: cr-agent-postgres
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: cr_agent
+    ports:
+      - "5433:5432"
+    volumes:
+      - agent-postgres-data:/var/lib/postgresql/data
+    networks:
+      - agent-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d cr_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  agent-redis:
+    image: redis:7-alpine
+    container_name: cr-agent-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - agent-net
+
+  agent-api:
+    build:
+      context: ..
+      dockerfile: docker/agent-api.Dockerfile
+    container_name: cr-agent-api
+    env_file:
+      - ../.env
+    environment:
+      AGENT_DATABASE_URL: postgresql://agent:agent@agent-postgres:5432/cr_agent?schema=public
+      REDIS_HOST: agent-redis
+      REDIS_PORT: 6379
+      COURSE_REP_API_URL: http://host.docker.internal:3000
+    ports:
+      - "3100:3100"
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      agent-redis:
+        condition: service_started
+    networks:
+      - agent-net
+
+  browser-worker:
+    build:
+      context: ..
+      dockerfile: docker/playwright.Dockerfile
+    container_name: cr-browser-worker
+    env_file:
+      - ../.env
+    environment:
+      AGENT_DATABASE_URL: postgresql://agent:agent@agent-postgres:5432/cr_agent?schema=public
+      REDIS_HOST: agent-redis
+      REDIS_PORT: 6379
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      agent-redis:
+        condition: service_started
+    networks:
+      - agent-net
+    shm_size: '2gb'
+
+  ai-worker:
+    build:
+      context: ..
+      dockerfile: docker/ai-worker.Dockerfile
+    container_name: cr-ai-worker
+    env_file:
+      - ../.env
+    environment:
+      AGENT_DATABASE_URL: postgresql://agent:agent@agent-postgres:5432/cr_agent?schema=public
+      REDIS_HOST: agent-redis
+      REDIS_PORT: 6379
+      COURSE_REP_API_URL: http://host.docker.internal:3000
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      agent-redis:
+        condition: service_started
+    networks:
+      - agent-net
+
+  discovery-worker:
+    build:
+      context: ..
+      dockerfile: docker/discovery-worker.Dockerfile
+    container_name: cr-discovery-worker
+    env_file:
+      - ../.env
+    environment:
+      AGENT_DATABASE_URL: postgresql://agent:agent@agent-postgres:5432/cr_agent?schema=public
+      REDIS_HOST: agent-redis
+      REDIS_PORT: 6379
+      COURSE_REP_API_URL: http://host.docker.internal:3000
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      agent-redis:
+        condition: service_started
+    networks:
+      - agent-net
+    shm_size: '2gb'
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  agent-postgres-data:

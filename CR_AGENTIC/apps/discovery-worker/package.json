@@ -1,0 +1,27 @@
+{
+  "name": "@cr-agentic/discovery-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "ts-node src/worker.ts",
+    "start": "node dist/worker.js"
+  },
+  "dependencies": {
+    "@cr-agentic/config": "0.1.0",
+    "@cr-agentic/database": "0.1.0",
+    "@cr-agentic/lms-adapters": "0.1.0",
+    "@cr-agentic/observability": "0.1.0",
+    "@cr-agentic/portal-discovery": "0.1.0",
+    "@cr-agentic/queue": "0.1.0",
+    "@cr-agentic/shared": "0.1.0",
+    "@cr-agentic/storage": "0.1.0",
+    "dotenv": "^16.4.7",
+    "playwright": "^1.49.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}
