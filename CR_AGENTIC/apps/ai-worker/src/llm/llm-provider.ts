@@ -13,6 +13,16 @@ export interface LlmProvider {
   complete(messages: LlmMessage[], options?: { json?: boolean }): Promise<LlmCompletionResult>;
 }
 
+function isJsonModeUnsupported(err: unknown): boolean {
+  const msg = (err as { message?: string })?.message?.toLowerCase() ?? '';
+  return (
+    msg.includes('response_format') ||
+    msg.includes('json_object') ||
+    msg.includes('json mode') ||
+    msg.includes('not supported')
+  );
+}
+
 export class OpenAiLlmProvider implements LlmProvider {
   private client: import('openai').default | null = null;
 
@@ -39,11 +49,21 @@ export class OpenAiLlmProvider implements LlmProvider {
     options?: { json?: boolean },
   ): Promise<LlmCompletionResult> {
     const client = this.getClient();
-    const response = await client.chat.completions.create({
-      model: this.model,
-      messages,
-      ...(options?.json ? { response_format: { type: 'json_object' } } : {}),
-    });
+    let response;
+    try {
+      response = await client.chat.completions.create({
+        model: this.model,
+        messages,
+        ...(options?.json ? { response_format: { type: 'json_object' } } : {}),
+      });
+    } catch (err) {
+      // Retry without json_object for providers/models that reject it.
+      if (!options?.json || !isJsonModeUnsupported(err)) throw err;
+      response = await client.chat.completions.create({
+        model: this.model,
+        messages,
+      });
+    }
 
     const choice = response.choices[0];
     return {
