@@ -144,7 +144,7 @@ EOF
     --iam-instance-profile Name="$PROFILE_NAME" \
     --security-group-ids "$SG_ID" \
     --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$VOLUME_GB,VolumeType=gp3}" \
-    --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
+    --metadata-options "HttpTokens=required,HttpEndpoint=enabled,HttpPutResponseHopLimit=2" \
     --user-data "$USER_DATA" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME}]" \
     --query 'Instances[0].InstanceId' --output text)"
