@@ -10,13 +10,17 @@ export class OpenAiCompletionClient implements LlmCompletionClient {
   constructor(
     private readonly apiKey: string | undefined,
     private readonly model: string,
+    private readonly baseURL?: string,
   ) {}
 
   private getClient() {
     if (!this.client) {
       if (!this.apiKey) throw new Error('OPENAI_API_KEY not configured');
       const OpenAI = require('openai').default;
-      this.client = new OpenAI({ apiKey: this.apiKey });
+      this.client = new OpenAI({
+        apiKey: this.apiKey,
+        ...(this.baseURL ? { baseURL: this.baseURL } : {}),
+      });
     }
     return this.client!;
   }

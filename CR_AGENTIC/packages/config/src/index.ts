@@ -17,6 +17,9 @@ export const agentEnvSchema = z.object({
   SESSION_ENCRYPTION_KEY: z.string().min(32),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o'),
+  // Optional override for OpenAI-compatible providers (e.g. OpenRouter:
+  // https://openrouter.ai/api/v1). Leave unset to use OpenAI directly.
+  OPENAI_BASE_URL: z.string().url().optional(),
   PORTAL_SEARCH_API_KEY: z.string().optional(),
   PORTAL_SEARCH_ENDPOINT: z.string().default('https://google.serper.dev/search'),
   BROWSER_MAX_CONTEXTS: z.coerce.number().default(50),

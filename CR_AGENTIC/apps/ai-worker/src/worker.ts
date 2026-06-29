@@ -19,7 +19,11 @@ async function main() {
   const env = loadAgentEnv();
   const redis = createRedisConnection();
   const s3 = new S3StorageClient(env);
-  const llm = new OpenAiLlmProvider(env.OPENAI_API_KEY, env.OPENAI_MODEL);
+  const llm = new OpenAiLlmProvider(
+    env.OPENAI_API_KEY,
+    env.OPENAI_MODEL,
+    env.OPENAI_BASE_URL,
+  );
   const docProcessor = new DocumentProcessor();
   const registry = new ToolRegistry();
   registerAiTools(registry, llm, docProcessor, s3);

@@ -24,7 +24,11 @@ async function main() {
     env.PORTAL_SEARCH_API_KEY,
     env.PORTAL_SEARCH_ENDPOINT,
   );
-  const llm = new OpenAiCompletionClient(env.OPENAI_API_KEY, env.OPENAI_MODEL);
+  const llm = new OpenAiCompletionClient(
+    env.OPENAI_API_KEY,
+    env.OPENAI_MODEL,
+    env.OPENAI_BASE_URL,
+  );
   const discovery = new PortalDiscoveryService(search, llm);
   const findPortal = new FindPortalProcessor(discovery);
 
