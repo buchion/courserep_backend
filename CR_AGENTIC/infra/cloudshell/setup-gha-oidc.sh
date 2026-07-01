@@ -11,8 +11,9 @@
 set -euo pipefail
 
 REGION="${REGION:-us-east-1}"
-REPO="${REPO:-buchion/courserep_backend}"
-BRANCH="${BRANCH:-cr-agentic}"
+# Keep OIDC trust pinned to the deployment source of truth.
+REPO="buchion/courserep_backend"
+BRANCH="cr-agentic"
 ROLE="${ROLE:-cr-agentic-gha-deploy}"
 INSTANCE_ID="${INSTANCE_ID:-i-0ec63ce951829039d}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"

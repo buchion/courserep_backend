@@ -35,9 +35,11 @@ jobs:
       AWS_REGION: us-east-1
       INSTANCE_ID: i-0ec63ce951829039d
       ROLE_ARN: arn:aws:iam::887731515131:role/cr-agentic-gha-deploy
+      REPO_SLUG: buchion/courserep_backend
+      DEPLOY_BRANCH: cr-agentic
     steps:
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -45,9 +47,9 @@ jobs:
       - name: Trigger remote deploy via SSM
         run: |
           set -euo pipefail
-          cat > params.json <<'JSON'
+          cat > params.json <<JSON
           {
-            "commands": ["runuser -l ubuntu -c 'cd ~/courserep_backend && git pull origin cr-agentic && cd CR_AGENTIC/docker && ./deploy.sh'"],
+            "commands": ["runuser -l ubuntu -c 'cd ~/courserep_backend && git remote set-url origin git@github.com:${REPO_SLUG}.git && git fetch origin ${DEPLOY_BRANCH} && git checkout ${DEPLOY_BRANCH} && git pull --ff-only origin ${DEPLOY_BRANCH} && cd CR_AGENTIC/docker && ./deploy.sh'"],
             "executionTimeout": ["7200"]
           }
           JSON
