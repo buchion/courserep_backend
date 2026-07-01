@@ -14,14 +14,29 @@ import { LmsType as PrismaLmsType } from '@cr-agentic/database';
 @Injectable()
 export class ConnectService {
   private readonly planner = new AgentPlanner();
+  private readonly connectTimeoutMs = 12_000;
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly courseRep: CourseRepClient,
   ) {}
 
+  private async withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(
+        () =>
+          reject(
+            new Error(`${label} timed out after ${this.connectTimeoutMs}ms`),
+          ),
+        this.connectTimeoutMs,
+      );
+    });
+
+    return Promise.race([promise, timeoutPromise]);
+  }
+
   async connectLms(userId: string, dto: ConnectLmsRequestDto) {
-    await this.courseRep.getUser(userId);
+    await this.withTimeout(this.courseRep.getUser(userId), 'course-rep user lookup');
 
     const account = await prisma.connectedAccount.create({
       data: {
@@ -48,18 +63,21 @@ export class ConnectService {
       data: { agentTaskId: task.id, status: 'PENDING' },
     });
 
-    await enqueueJob(
-      QUEUE_NAMES.BROWSER_CONNECT_LMS,
-      this.redis,
-      'connect',
-      {
-        connectedAccountId: account.id,
-        userId,
-        lmsType: dto.lmsType,
-        lmsBaseUrl: dto.lmsBaseUrl,
-        taskId: task.id,
-        taskRunId: taskRun.id,
-      },
+    await this.withTimeout(
+      enqueueJob(
+        QUEUE_NAMES.BROWSER_CONNECT_LMS,
+        this.redis,
+        'connect',
+        {
+          connectedAccountId: account.id,
+          userId,
+          lmsType: dto.lmsType,
+          lmsBaseUrl: dto.lmsBaseUrl,
+          taskId: task.id,
+          taskRunId: taskRun.id,
+        },
+      ),
+      'queue enqueue',
     );
 
     await writeAuditLog({
@@ -105,16 +123,19 @@ export class ConnectService {
       data: { agentTaskId: task.id, status: 'PENDING' },
     });
 
-    await enqueueJob(
-      QUEUE_NAMES.BROWSER_REFRESH_SESSION,
-      this.redis,
-      'refresh',
-      {
-        connectedAccountId: account.id,
-        userId,
-        taskId: task.id,
-        taskRunId: taskRun.id,
-      },
+    await this.withTimeout(
+      enqueueJob(
+        QUEUE_NAMES.BROWSER_REFRESH_SESSION,
+        this.redis,
+        'refresh',
+        {
+          connectedAccountId: account.id,
+          userId,
+          taskId: task.id,
+          taskRunId: taskRun.id,
+        },
+      ),
+      'queue enqueue',
     );
 
     return { taskId: task.id, status: 'REAUTH_REQUIRED' };
