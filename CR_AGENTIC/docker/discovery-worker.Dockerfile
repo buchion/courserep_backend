@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.49.1-noble AS builder
+FROM mcr.microsoft.com/playwright:v1.61.0-noble AS builder
 WORKDIR /app
 COPY package.json yarn.lock tsconfig.base.json ./
 COPY packages ./packages
@@ -8,7 +8,7 @@ RUN yarn workspace @cr-agentic/database prisma:generate \
   && yarn build:packages \
   && yarn workspace @cr-agentic/discovery-worker build
 
-FROM mcr.microsoft.com/playwright:v1.49.1-noble
+FROM mcr.microsoft.com/playwright:v1.61.0-noble
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app ./
