@@ -108,6 +108,19 @@ agent.yourdomain.com {
 Then point your domain's DNS at the instance and open `80/443` in the security
 group. The mobile app / main API should call `https://agent.yourdomain.com`.
 
+### CORS (required for the React web app)
+
+The browser web client calls this API cross-origin. Set `CORS_ORIGIN` in
+`CR_AGENTIC/.env` to every origin where the React app is hosted, then rebuild
+`agent-api`:
+
+```bash
+CORS_ORIGIN=https://agent.courserep.org,http://localhost:5173
+```
+
+After redeploying, an `OPTIONS` preflight to `/api/v1/agent/...` should return
+`204` with `Access-Control-Allow-Origin` matching the request origin.
+
 ## 8. Connect the main Course Rep app
 
 - Set `COURSE_REP_API_URL` in `.env` to the parent API's reachable URL.
