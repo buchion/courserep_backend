@@ -61,30 +61,58 @@ export class DeepDiscoveryService {
 
   async results(userId: string, sessionId: string) {
     await this.onboarding.requireSession(userId, sessionId);
+    const empty = [] as const;
+    const safeMany = async <T>(fn: () => Promise<T[]>) => {
+      try {
+        return await fn();
+      } catch {
+        return [] as T[];
+      }
+    };
+    const safeOne = async <T>(fn: () => Promise<T | null>) => {
+      try {
+        return await fn();
+      } catch {
+        return null;
+      }
+    };
+
     const [courses, assignments, timetableSlots, academicRecords, calendarEvents, portalProfile] =
       await Promise.all([
-        prisma.discoveredCourse.findMany({
-          where: { onboardingSessionId: sessionId },
-          orderBy: { code: 'asc' },
-        }),
-        prisma.discoveredAssignment.findMany({
-          where: { onboardingSessionId: sessionId },
-          orderBy: { dueAt: 'asc' },
-        }),
-        prisma.discoveredTimetableSlot.findMany({
-          where: { onboardingSessionId: sessionId },
-          orderBy: { dayOfWeek: 'asc' },
-        }),
-        prisma.discoveredAcademicRecord.findMany({
-          where: { onboardingSessionId: sessionId },
-        }),
-        prisma.discoveredCalendarEvent.findMany({
-          where: { onboardingSessionId: sessionId },
-          orderBy: { startsAt: 'asc' },
-        }),
-        prisma.discoveredPortalProfile.findUnique({
-          where: { onboardingSessionId: sessionId },
-        }),
+        safeMany(() =>
+          prisma.discoveredCourse.findMany({
+            where: { onboardingSessionId: sessionId },
+            orderBy: { code: 'asc' },
+          }),
+        ),
+        safeMany(() =>
+          prisma.discoveredAssignment.findMany({
+            where: { onboardingSessionId: sessionId },
+            orderBy: { dueAt: 'asc' },
+          }),
+        ),
+        safeMany(() =>
+          prisma.discoveredTimetableSlot.findMany({
+            where: { onboardingSessionId: sessionId },
+            orderBy: { dayOfWeek: 'asc' },
+          }),
+        ),
+        safeMany(() =>
+          prisma.discoveredAcademicRecord.findMany({
+            where: { onboardingSessionId: sessionId },
+          }),
+        ),
+        safeMany(() =>
+          prisma.discoveredCalendarEvent.findMany({
+            where: { onboardingSessionId: sessionId },
+            orderBy: { startsAt: 'asc' },
+          }),
+        ),
+        safeOne(() =>
+          prisma.discoveredPortalProfile.findUnique({
+            where: { onboardingSessionId: sessionId },
+          }),
+        ),
       ]);
 
     return {
@@ -94,6 +122,13 @@ export class DeepDiscoveryService {
       academicRecords,
       calendarEvents,
       portalProfile,
+      discoveryStatus: (
+        await prisma.connectedAccount.findFirst({
+          where: { onboardingSessionId: sessionId },
+          orderBy: { createdAt: 'desc' },
+          select: { discoveryStatus: true },
+        }).catch(() => null)
+      )?.discoveryStatus ?? null,
     };
   }
 
