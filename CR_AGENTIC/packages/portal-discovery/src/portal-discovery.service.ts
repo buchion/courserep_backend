@@ -13,27 +13,37 @@ const SYSTEM_PROMPT = `You are an assistant that identifies the official student
 You are given web search results and fetched page metadata.
 Return STRICT JSON of the form:
 {"candidates":[{"loginUrl":"https://...","portalName":"...","lmsType":"CANVAS|MOODLE|BLACKBOARD|BRIGHTSPACE|GOOGLE_CLASSROOM|GENERIC","confidence":0.0,"evidence":["..."]}]}
-Rank by likelihood the URL is the real student login. Prefer official university domains (.edu, .ac.*),
-pages that contain a login form, and URLs containing "login", "portal", "sso", or "student".
-Return at most 5 candidates, highest confidence first. confidence is between 0 and 1.`;
+Rank by likelihood the URL is the real student academic login portal.
+Strongly prefer: studentportal.*, portal.*, students.*, LMS hosts (lms/canvas/moodle/blackboard), and paths like /portal/login.
+Strongly avoid: WordPress/CMS auth (wp-login.php, /wp-admin), marketing/news/seminar pages, and bare homepages.
+Prefer official university domains (.edu, .ac.*, .edu.ng). confidence is between 0 and 1.
+Return at most 5 candidates, highest confidence first.`;
 
 const ACADEMIC_TLD_RE = /\.(edu|ac\.[a-z]{2}|edu\.[a-z]{2})(\/|$)/i;
-const LOGIN_HINT_RE = /(login|portal|sso|student|signin|auth)/i;
+const CMS_AUTH_RE =
+  /\/wp-login\.php(?:$|\?)|\/wp-admin(?:\/|$)|\/xmlrpc\.php(?:$|\?)|\/user\/login(?:$|\?).*drupal/i;
+const PORTAL_HOST_RE =
+  /^(studentportal|students|student|portal|myportal|sis|erp)\./i;
+const LMS_HOST_RE = /^(lms|canvas|moodle|blackboard|brightspace|elearning|e-learning)\./i;
+const CONTENT_PATH_RE =
+  /\/(blog|news|seminar|events?|about|admission|wp-content|category|tag)(\/|$)/i;
 
 export class PortalDiscoveryService {
   constructor(
     private readonly search: WebSearchClient,
     private readonly llm: LlmCompletionClient,
-    private readonly maxPagesToFetch = 6,
+    /** Fetch enough seeds that studentportal.* is not dropped when homepage probes expand. */
+    private readonly maxPagesToFetch = 12,
   ) {}
 
   async discover(input: DiscoverPortalInput): Promise<PortalCandidateResult[]> {
     const query = `${input.universityName} student portal login${input.country ? ' ' + input.country : ''}`;
     const results = await this.search.search(query, 8);
 
+    // Priority seeds first so slice(0, maxPagesToFetch) keeps studentportal.* URLs.
     const seeds = new Set<string>();
-    for (const r of results) seeds.add(r.url);
     for (const url of this.websiteSeedUrls(input.website)) seeds.add(url);
+    for (const r of results) seeds.add(r.url);
 
     const metas = await Promise.all(
       Array.from(seeds)
@@ -49,7 +59,8 @@ export class PortalDiscoveryService {
 
     try {
       const llmCandidates = await this.rankWithLlm(input, enriched);
-      if (llmCandidates.length > 0) return llmCandidates;
+      const reranked = this.rerankCandidates(llmCandidates, enriched);
+      if (reranked.length > 0) return reranked;
     } catch {
       // Fall through to heuristic ranking if the LLM call/parse fails.
     }
@@ -57,36 +68,78 @@ export class PortalDiscoveryService {
     return this.heuristicRanking(enriched);
   }
 
-  /** When web search is unavailable, still probe the school site + common portal hosts. */
+  /**
+   * Probe common student-portal hosts first (e.g. studentportal.unilag.edu.ng/login),
+   * then LMS hosts, then weaker same-origin paths that often redirect to WordPress.
+   */
   private websiteSeedUrls(website?: string): string[] {
     if (!website) return [];
-    const seeds = [website];
     try {
       const base = new URL(website);
       const host = base.hostname.replace(/^www\./i, '');
       const origin = base.origin;
-      seeds.push(
-        `${origin}/login`,
-        `${origin}/student`,
-        `${origin}/portal`,
+      return [
+        `https://studentportal.${host}/login`,
+        `https://studentportal.${host}`,
+        `https://students.${host}/login`,
+        `https://students.${host}`,
+        `https://student.${host}/login`,
+        `https://student.${host}`,
+        `https://portal.${host}/login`,
         `https://portal.${host}`,
+        `https://myportal.${host}/login`,
+        `https://myportal.${host}`,
+        `${origin}/portal/login`,
+        `${origin}/portal`,
+        `${origin}/studentportal`,
         `https://lms.${host}`,
+        `https://elearning.${host}`,
         `https://canvas.${host}`,
         `https://moodle.${host}`,
         `https://blackboard.${host}`,
-      );
+        // Weaker: often CMS login on the marketing site.
+        `${origin}/login`,
+        `${origin}/student`,
+        website,
+      ];
     } catch {
-      // Ignore invalid website URLs.
+      return [website];
     }
-    return seeds;
   }
 
   private heuristicScore(meta: PageMetadata): number {
+    const url = meta.finalUrl;
+    if (CMS_AUTH_RE.test(url)) return 0.05;
+
+    let host = '';
+    let path = '/';
+    try {
+      const u = new URL(url);
+      host = u.hostname.replace(/^www\./i, '');
+      path = u.pathname || '/';
+    } catch {
+      return 0;
+    }
+
     let score = 0;
-    if (ACADEMIC_TLD_RE.test(meta.finalUrl)) score += 0.4;
-    if (LOGIN_HINT_RE.test(meta.finalUrl)) score += 0.3;
-    if (meta.hasLoginForm) score += 0.3;
-    return Math.min(1, score);
+    if (ACADEMIC_TLD_RE.test(url)) score += 0.2;
+
+    if (PORTAL_HOST_RE.test(host)) score += 0.45;
+    else if (LMS_HOST_RE.test(host)) score += 0.4;
+
+    if (/\/login\/?$/i.test(path) && (PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host))) {
+      score += 0.2;
+    } else if (/\/(portal|studentportal|students)(\/|$)/i.test(path)) {
+      score += 0.15;
+    } else if (/login|signin|sso|auth/i.test(path)) {
+      score += 0.08;
+    }
+
+    if (meta.hasLoginForm) score += 0.25;
+    if (CONTENT_PATH_RE.test(path)) score -= 0.35;
+    if (path === '/' || path === '') score -= 0.15;
+
+    return Math.max(0, Math.min(1, score));
   }
 
   private heuristicRanking(
@@ -97,7 +150,7 @@ export class PortalDiscoveryService {
     }>,
   ): PortalCandidateResult[] {
     return enriched
-      .filter((e) => e.heuristic > 0)
+      .filter((e) => e.heuristic >= 0.2 && !CMS_AUTH_RE.test(e.meta.finalUrl))
       .sort((a, b) => b.heuristic - a.heuristic)
       .slice(0, 5)
       .map((e) => ({
@@ -109,14 +162,61 @@ export class PortalDiscoveryService {
       }));
   }
 
+  /** Blend LLM order with heuristics so CMS auth never stays on top. */
+  private rerankCandidates(
+    llmCandidates: PortalCandidateResult[],
+    enriched: Array<{ meta: PageMetadata; heuristic: number }>,
+  ): PortalCandidateResult[] {
+    const heuristicByUrl = new Map(
+      enriched.map((e) => [e.meta.finalUrl, e.heuristic] as const),
+    );
+
+    return llmCandidates
+      .map((c, index) => {
+        const heuristic = heuristicByUrl.get(c.loginUrl) ?? this.scoreUrlOnly(c.loginUrl);
+        const llmBoost = Math.max(0, 0.2 - index * 0.03);
+        let confidence = Math.max(c.confidence * 0.5 + heuristic * 0.5 + llmBoost, heuristic);
+        if (CMS_AUTH_RE.test(c.loginUrl)) confidence = Math.min(confidence, 0.05);
+        return {
+          ...c,
+          confidence: Math.max(0, Math.min(1, Number(confidence.toFixed(2)))),
+          evidence: CMS_AUTH_RE.test(c.loginUrl)
+            ? [...c.evidence, 'demoted cms auth']
+            : c.evidence,
+        };
+      })
+      .filter((c) => c.confidence >= 0.2 && !CMS_AUTH_RE.test(c.loginUrl))
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 5);
+  }
+
+  private scoreUrlOnly(url: string): number {
+    return this.heuristicScore({
+      url,
+      finalUrl: url,
+      hasLoginForm: false,
+      htmlSample: '',
+    });
+  }
+
   private buildEvidence(
     meta: PageMetadata,
     lms: ReturnType<typeof classifyLms>,
   ): string[] {
     const evidence: string[] = [];
     if (ACADEMIC_TLD_RE.test(meta.finalUrl)) evidence.push('academic domain');
-    if (LOGIN_HINT_RE.test(meta.finalUrl)) evidence.push('login keyword in URL');
+    try {
+      const host = new URL(meta.finalUrl).hostname.replace(/^www\./i, '');
+      if (PORTAL_HOST_RE.test(host)) evidence.push('student portal host');
+      if (LMS_HOST_RE.test(host)) evidence.push('lms host');
+    } catch {
+      // ignore
+    }
+    if (/login|portal|sso|student|signin|auth/i.test(meta.finalUrl)) {
+      evidence.push('login keyword in URL');
+    }
     if (meta.hasLoginForm) evidence.push('login form detected');
+    if (CMS_AUTH_RE.test(meta.finalUrl)) evidence.push('cms auth url');
     if (lms.matchedSignal) evidence.push(`lms signal: ${lms.matchedSignal}`);
     return evidence;
   }
@@ -134,6 +234,7 @@ export class PortalDiscoveryService {
       title: e.meta.title,
       hasLoginForm: e.meta.hasLoginForm,
       detectedLms: e.lms.lmsType,
+      heuristicScore: e.heuristic,
     }));
 
     const userPrompt = JSON.stringify({
