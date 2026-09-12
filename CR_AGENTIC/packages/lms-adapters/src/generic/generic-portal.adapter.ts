@@ -148,15 +148,17 @@ export class GenericPortalAdapter implements ILmsAdapter {
   ): Promise<LmsCourse[]> {
     const start = page.url();
     const paths = [
+      '?pg=home',
       '?pg=course-registration',
       config.paths?.courses ?? '/courses',
       '/course-registration',
       '/dashboard',
-      '?pg=home',
     ];
     const courseSelector = config.selectors?.courseLink ?? DEFAULT_CONFIG.selectors!.courseLink!;
     const titleSelector = config.selectors?.courseTitle ?? DEFAULT_CONFIG.selectors!.courseTitle!;
     const courses: LmsCourse[] = [];
+    const junkTitle =
+      /download your course material|course registration|hostel|biodata|fee payment|telegram|twitter|dashboard|helpdesk|settings/i;
 
     for (const path of paths) {
       try {
@@ -178,10 +180,10 @@ export class GenericPortalAdapter implements ILmsAdapter {
             (await titleEl.count()) > 0
               ? (await titleEl.textContent())?.trim()
               : (await el.textContent())?.trim();
-          if (!title) continue;
+          if (!title || junkTitle.test(title)) continue;
           courses.push({
             externalId: href,
-            title,
+            title: title.replace(/\s+/g, ' ').trim(),
             url: new URL(href, page.url()).toString(),
           });
         }
