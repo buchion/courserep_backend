@@ -138,6 +138,8 @@ export class PortalDiscoveryService {
     if (PORTAL_HOST_RE.test(host)) score += 0.35;
     else if (LMS_HOST_RE.test(host)) score += 0.35;
 
+    if (/\/portalplus(\/|$)/i.test(path)) score += 0.25;
+
     if (/\/login\/?$/i.test(path) && (PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host))) {
       score += 0.15;
     } else if (/\/(portal|studentportal|students)(\/|$)/i.test(path)) {
