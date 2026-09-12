@@ -48,8 +48,9 @@ jobs:
           DEFAULT_CORS='https://app.courserep.ng,https://app.courserep.org,https://course-rep-agent-web.pages.dev,https://agent.courserep.org,http://localhost:5173'
           export CORS_ORIGIN_EFFECTIVE="${CR_AGENT_CORS_ORIGIN:-$DEFAULT_CORS}"
 
-          REMOTE_B64="$(python3 <<'PY'
+          python3 <<'PY'
           import base64, json, os, textwrap
+          from pathlib import Path
 
           updates = {}
           for key, env_key in [
@@ -66,10 +67,10 @@ jobs:
           repo = os.environ["REPO_SLUG"]
           branch = os.environ["DEPLOY_BRANCH"]
 
-          script = textwrap.dedent(
+          inner = textwrap.dedent(
               f"""\
               set -euo pipefail
-              cd ~/courserep_backend
+              cd "$HOME/courserep_backend"
               git remote set-url origin git@github.com:{repo}.git
               git fetch origin {branch}
               git checkout {branch}
@@ -104,30 +105,16 @@ jobs:
               ./deploy.sh
               """
           )
-          print(base64.b64encode(script.encode()).decode())
-          PY
-          )"
-
-          python3 - <<PY
-          import json
+          remote_b64 = base64.b64encode(inner.encode()).decode()
+          # SSM runs as root; mirror prior deploy and execute as ubuntu.
           params = {
-            "commands": [f"echo {json.dumps('$REMOTE_B64')} | tr -d '\"' | base64 -d | bash"],
-            "executionTimeout": ["7200"],
-          }
-          # Fix quoting: write cleanly
-          PY
-
-          # Write params without nested-quote bugs
-          python3 - "$REMOTE_B64" <<'PY'
-          import json, sys
-          remote_b64 = sys.argv[1]
-          params = {
-              "commands": [f"echo {remote_b64} | base64 -d | bash"],
+              "commands": [
+                  f"runuser -l ubuntu -c 'echo {remote_b64} | base64 -d | bash'"
+              ],
               "executionTimeout": ["7200"],
           }
-          with open("params.json", "w") as f:
-              json.dump(params, f)
-          print("Wrote params.json")
+          Path("params.json").write_text(json.dumps(params))
+          print("Wrote params.json; env keys to sync:", ", ".join(sorted(updates)) or "(none)")
           PY
 
           CID=$(aws ssm send-command \

@@ -67,10 +67,10 @@ jobs:
           repo = os.environ["REPO_SLUG"]
           branch = os.environ["DEPLOY_BRANCH"]
 
-          script = textwrap.dedent(
+          inner = textwrap.dedent(
               f"""\
               set -euo pipefail
-              cd ~/courserep_backend
+              cd "$HOME/courserep_backend"
               git remote set-url origin git@github.com:{repo}.git
               git fetch origin {branch}
               git checkout {branch}
@@ -105,9 +105,12 @@ jobs:
               ./deploy.sh
               """
           )
-          remote_b64 = base64.b64encode(script.encode()).decode()
+          remote_b64 = base64.b64encode(inner.encode()).decode()
+          # SSM runs as root; mirror prior deploy and execute as ubuntu.
           params = {
-              "commands": [f"echo {remote_b64} | base64 -d | bash"],
+              "commands": [
+                  f"runuser -l ubuntu -c 'echo {remote_b64} | base64 -d | bash'"
+              ],
               "executionTimeout": ["7200"],
           }
           Path("params.json").write_text(json.dumps(params))
