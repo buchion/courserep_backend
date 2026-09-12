@@ -64,10 +64,8 @@ export class DeepScrapeProcessor {
         }
       }
     }
-    // YabaTech student LMS lives under /portalplus/, not the public hub.
-    if (/yabatech\.edu\.ng/i.test(home) && !/portalplus/i.test(home)) {
-      home = 'https://portal.yabatech.edu.ng/portalplus/';
-    }
+    // Prefer a path-bearing LMS base from the confirmed candidate (e.g. /portalplus/,
+    // /studentportal/) over a bare school hub origin whenever we have one.
     return home;
   }
 
@@ -180,7 +178,7 @@ export class DeepScrapeProcessor {
     await this.capturePortalplusAcademics(page, home, onboardingSessionId, userId);
   }
 
-  /** YabaTech-style semester result tables (?pg=result). */
+  /** Semester/result tables via ?pg=result or similar portal query pages. */
   private async scrapeAcademicResults(
     page: Page,
     home: string,
@@ -225,7 +223,7 @@ export class DeepScrapeProcessor {
         userId,
         cumulativeGpa: Number.isFinite(latestCgpa) ? latestCgpa : undefined,
         courseGrades: rows,
-        gradingScale: { source: 'portalplus-result-table' },
+        gradingScale: { source: 'portal-result-table' },
       },
     });
     logger.info({ onboardingSessionId, rows: rows.length }, 'Scraped academic results');
