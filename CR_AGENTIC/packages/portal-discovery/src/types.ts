@@ -26,6 +26,8 @@ export interface DiscoverPortalInput {
   universityName: string;
   country?: string;
   website?: string;
+  /** Promoted known-good portal after enough successful logins. */
+  knownPortalUrl?: string;
 }
 
 /** Minimal completion contract so the package stays provider-agnostic. */
