@@ -283,9 +283,6 @@ export class GenericPortalAdapter implements ILmsAdapter {
       '?pg=home',
       config.paths?.profile,
       '/profile',
-      '/user/profile',
-      '/my/profile',
-      '/account',
     ].filter(Boolean) as string[];
 
     for (const path of candidates) {
@@ -293,8 +290,8 @@ export class GenericPortalAdapter implements ILmsAdapter {
         const target = path.startsWith('?')
           ? this.withQuery(start, path)
           : new URL(path, start).toString();
-        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 20_000 });
-        await page.waitForTimeout(800);
+        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 12_000 });
+        await page.waitForTimeout(500);
         const text = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
         const parsed = this.parseLabeledProfile(text);
         if (parsed) return parsed;
