@@ -29,8 +29,8 @@ fi
 
 COMPOSE="$DC --env-file $ENV_FILE -f $COMPOSE_FILE"
 
-echo "==> Building images..."
-$COMPOSE build
+echo "==> Building images (no-cache so source edits always ship)..."
+$COMPOSE build --no-cache
 
 # `up` runs the one-shot `migrate` service first (app services declare
 # depends_on migrate: service_completed_successfully), so migrations are
