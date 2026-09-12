@@ -1,4 +1,8 @@
 FROM mcr.microsoft.com/playwright:v1.61.0-noble AS builder
+
+# Bump to force rebuild when BuildKit cache ignores app source edits
+ARG CACHEBUST=20260912b
+RUN echo "cachebust=$CACHEBUST"
 WORKDIR /app
 COPY package.json yarn.lock tsconfig.base.json ./
 COPY packages ./packages
