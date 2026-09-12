@@ -40,8 +40,9 @@ export class PortalDiscoveryService {
     const query = `${input.universityName} student portal login${input.country ? ' ' + input.country : ''}`;
     const results = await this.search.search(query, 8);
 
-    // Priority seeds first so slice(0, maxPagesToFetch) keeps studentportal.* URLs.
+    // Priority seeds first so slice(0, maxPagesToFetch) keeps known + studentportal.* URLs.
     const seeds = new Set<string>();
+    if (input.knownPortalUrl) seeds.add(input.knownPortalUrl);
     for (const url of this.websiteSeedUrls(input.website)) seeds.add(url);
     for (const r of results) seeds.add(r.url);
 
