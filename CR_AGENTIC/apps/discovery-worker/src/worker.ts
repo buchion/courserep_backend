@@ -12,6 +12,7 @@ import {
 } from '@cr-agentic/portal-discovery';
 import { FindPortalProcessor } from './processors/find-portal.processor';
 import { DeepScrapeProcessor } from './processors/deep-scrape.processor';
+import { prisma } from '@cr-agentic/database';
 import { createDiscoveryBrowser } from './browser/discovery-browser';
 
 const logger = createLogger('discovery-worker');
@@ -59,6 +60,15 @@ async function main() {
       logger.error({ jobId: job?.id, err: err.message }, 'Discovery job failed');
       if (job && (job.attemptsMade ?? 0) >= (job.opts.attempts ?? 1)) {
         await moveToDlq(redis, worker.name, String(job.id), job.data, err);
+        const accountId = (job.data as { connectedAccountId?: string })?.connectedAccountId;
+        if (accountId && worker.name === QUEUE_NAMES.DISCOVERY_DEEP_SCRAPE) {
+          await prisma.connectedAccount
+            .update({
+              where: { id: accountId },
+              data: { discoveryStatus: 'FAILED' },
+            })
+            .catch(() => undefined);
+        }
       }
     });
   }
