@@ -53,10 +53,23 @@ export class GenericPortalAdapter implements ILmsAdapter {
   ): Promise<boolean> {
     const selector = config.selectors?.authMarker ?? DEFAULT_CONFIG.selectors!.authMarker!;
     try {
-      await page.waitForSelector(selector, { timeout: 10_000 });
+      await page.waitForSelector(selector, { timeout: 8_000 });
       return true;
     } catch {
-      return false;
+      // Nigerian portals like YabaTech portalplus often lack shared auth chrome.
+      const url = page.url().toLowerCase();
+      const passwordVisible = (await page.locator('input[type="password"]').count()) > 0;
+      if (passwordVisible) return false;
+
+      if (/[?&]pg=home\b/.test(url) || /\/portalplus\//i.test(url) && !/login/i.test(url)) {
+        return true;
+      }
+
+      const body = ((await page.locator('body').innerText().catch(() => '')) || '').toLowerCase();
+      const looksLoggedIn =
+        /(dashboard|biodata|course registration|my result|current semester)/i.test(body) &&
+        !/sign in to student portal/i.test(body.slice(0, 160));
+      return looksLoggedIn;
     }
   }
 
