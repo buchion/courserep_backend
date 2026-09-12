@@ -17,8 +17,6 @@ import {
   ManualPortalRequestDto,
 } from './dto/onboarding.request.dto';
 
-@Injectable()
-
 /** Keep path prefixes like /portalplus/ instead of collapsing to origin-only. */
 export function portalBaseFromLoginUrl(loginUrl: string): string {
   const u = new URL(loginUrl);
@@ -33,6 +31,7 @@ export function portalBaseFromLoginUrl(loginUrl: string): string {
   return `${u.origin}${path}`;
 }
 
+@Injectable()
 export class PortalService {
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
