@@ -171,6 +171,18 @@ export class DeepScrapeProcessor {
     } catch (err) {
       logger.warn({ err, home, onboardingSessionId }, 'Portal home navigation failed');
     }
+
+    // Hit biodata explicitly first — generic extractProfile can miss when home URL is odd.
+    try {
+      const biodata = home.includes('?')
+        ? home.replace(/(\?.*)$/, '?pg=biodata')
+        : `${home.replace(/\/?$/, '/')}?pg=biodata`;
+      await page.goto(biodata, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.waitForTimeout(600);
+    } catch (err) {
+      logger.warn({ err, onboardingSessionId }, 'Biodata navigation failed');
+    }
+
     const adapter = this.safeAdapter(account.lmsType);
     let profile = adapter.extractProfile
       ? await adapter.extractProfile(page, config).catch(() => null)
@@ -179,69 +191,79 @@ export class DeepScrapeProcessor {
     if (!profile) {
       const text = await this.collectText(page, home, PROFILE_PATHS);
       if (text) {
-        const extracted = await this.extractJson(
-          'Extract the student profile. Return STRICT JSON: ' +
-            '{"displayName": string|null, "email": string|null, "studentId": string|null, ' +
-            '"departmentName": string|null, "academicLevelName": string|null}.',
-          text,
-        );
-        profile = {
-          displayName: typeof extracted.displayName === 'string' ? extracted.displayName : undefined,
-          email: typeof extracted.email === 'string' ? extracted.email : undefined,
-          studentId: typeof extracted.studentId === 'string' ? extracted.studentId : undefined,
-          departmentName:
-            typeof extracted.departmentName === 'string' ? extracted.departmentName : undefined,
-          academicLevelName:
-            typeof extracted.academicLevelName === 'string'
-              ? extracted.academicLevelName
-              : undefined,
-        };
-        if (!profile.displayName && !profile.studentId && !profile.email) {
-          profile = null;
+        if (adapter instanceof GenericPortalAdapter) {
+          profile = adapter.parseLabeledProfile(text);
+        }
+        if (!profile) {
+          const extracted = await this.extractJson(
+            'Extract the student profile. Return STRICT JSON: ' +
+              '{"displayName": string|null, "email": string|null, "studentId": string|null, ' +
+              '"departmentName": string|null, "academicLevelName": string|null}.',
+            text,
+          );
+          profile = {
+            displayName: typeof extracted.displayName === 'string' ? extracted.displayName : undefined,
+            email: typeof extracted.email === 'string' ? extracted.email : undefined,
+            studentId: typeof extracted.studentId === 'string' ? extracted.studentId : undefined,
+            departmentName:
+              typeof extracted.departmentName === 'string' ? extracted.departmentName : undefined,
+            academicLevelName:
+              typeof extracted.academicLevelName === 'string'
+                ? extracted.academicLevelName
+                : undefined,
+          };
+          if (!profile.displayName && !profile.studentId && !profile.email) {
+            profile = null;
+          }
         }
       }
     }
 
-    if (!profile) return;
+    if (!profile && adapter instanceof GenericPortalAdapter) {
+      const body = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+      if (body) profile = adapter.parseLabeledProfile(body);
+    }
 
-    await prisma.discoveredPortalProfile.upsert({
-      where: { onboardingSessionId },
-      create: {
-        onboardingSessionId,
-        userId,
-        displayName: profile.displayName,
-        email: profile.email,
-        studentId: profile.studentId,
-        departmentName: profile.departmentName,
-        academicLevelName: profile.academicLevelName,
-        rawJson: profile as object,
-      },
-      update: {
-        displayName: profile.displayName,
-        email: profile.email,
-        studentId: profile.studentId,
-        departmentName: profile.departmentName,
-        academicLevelName: profile.academicLevelName,
-        rawJson: profile as object,
-      },
-    });
+    if (profile) {
+      await prisma.discoveredPortalProfile.upsert({
+        where: { onboardingSessionId },
+        create: {
+          onboardingSessionId,
+          userId,
+          displayName: profile.displayName,
+          email: profile.email,
+          studentId: profile.studentId,
+          departmentName: profile.departmentName,
+          academicLevelName: profile.academicLevelName,
+          rawJson: profile as object,
+        },
+        update: {
+          displayName: profile.displayName,
+          email: profile.email,
+          studentId: profile.studentId,
+          departmentName: profile.departmentName,
+          academicLevelName: profile.academicLevelName,
+          rawJson: profile as object,
+        },
+      });
 
-    // Mirror profile hints onto the onboarding session for later identity upsert.
-    await prisma.onboardingSession.update({
-      where: { id: onboardingSessionId },
-      data: {
-        ...(profile.departmentName ? { departmentName: profile.departmentName } : {}),
-        ...(profile.academicLevelName
-          ? { academicLevelName: profile.academicLevelName }
-          : {}),
-      },
-    });
+      await prisma.onboardingSession.update({
+        where: { id: onboardingSessionId },
+        data: {
+          ...(profile.departmentName ? { departmentName: profile.departmentName } : {}),
+          ...(profile.academicLevelName
+            ? { academicLevelName: profile.academicLevelName }
+            : {}),
+        },
+      });
+      logger.info({ onboardingSessionId, studentId: profile.studentId }, 'Scraped portal profile');
+    } else {
+      logger.warn({ onboardingSessionId, home }, 'Portal profile not found');
+    }
 
     await this.scrapeAcademicResults(page, home, onboardingSessionId, userId).catch((err) => {
       logger.warn({ err, onboardingSessionId }, 'Academic results scrape skipped');
     });
-
-    logger.info({ onboardingSessionId }, 'Scraped portal profile');
   }
 
   /** YabaTech-style semester result tables (?pg=result). */
@@ -263,13 +285,16 @@ export class DeepScrapeProcessor {
     const tableText = await page.locator('table').first().innerText().catch(() => '');
     for (const line of tableText.split('\n')) {
       const parts = line.split('\t').map((p) => p.trim()).filter(Boolean);
-      if (parts.length >= 5 && /\d{4}\/\d{4}/.test(parts[0] || '')) {
+      // YabaTech rows look like: 1, 2013/2014, SECOND SEMESTER, ND 1, 2.66, 2.46
+      const sessionIdx = parts.findIndex((p) => /\d{4}\/\d{4}/.test(p));
+      if (sessionIdx >= 0 && parts.length - sessionIdx >= 5) {
+        const slice = parts.slice(sessionIdx);
         rows.push({
-          session: parts[0],
-          semester: parts[1],
-          level: parts[2],
-          cgpa: parts[3],
-          gpa: parts[4],
+          session: slice[0],
+          semester: slice[1],
+          level: slice[2],
+          cgpa: slice[3],
+          gpa: slice[4],
         });
       }
     }
