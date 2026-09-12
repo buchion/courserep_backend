@@ -4,6 +4,8 @@ import { QUEUE_NAMES } from '@cr-agentic/shared';
 export interface QueuePolicy {
   concurrency: number;
   defaultJobOptions: JobsOptions;
+  /** BullMQ worker lock duration ms. Deep scrape needs longer than the 2m default. */
+  lockDuration?: number;
 }
 
 export const QUEUE_POLICIES: Record<string, QueuePolicy> = {
@@ -109,7 +111,8 @@ export const QUEUE_POLICIES: Record<string, QueuePolicy> = {
     },
   },
   [QUEUE_NAMES.DISCOVERY_DEEP_SCRAPE]: {
-    concurrency: 5,
+    concurrency: 2,
+    lockDuration: 600_000,
     defaultJobOptions: {
       attempts: 3,
       backoff: { type: 'exponential', delay: 15_000 },
