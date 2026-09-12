@@ -6,6 +6,7 @@ import {
 } from '@cr-agentic/database';
 import { createLogger, writeAuditLog } from '@cr-agentic/observability';
 import { PortalDiscoveryService, PortalCandidateResult } from '@cr-agentic/portal-discovery';
+import { LmsType } from '@cr-agentic/shared';
 import type { DiscoveryFindPortalJob } from '@cr-agentic/shared';
 
 
@@ -104,7 +105,7 @@ export class FindPortalProcessor {
       : {
           loginUrl: knownPortalUrl,
           portalName: 'Known student portal',
-          lmsType: 'GENERIC' as const,
+          lmsType: LmsType.GENERIC,
           confidence: 0.99,
           evidence: ['known-good-portal:5+ successful logins'],
         };
