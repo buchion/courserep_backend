@@ -13,7 +13,8 @@ export class SerperSearchClient implements WebSearchClient {
 
   async search(query: string, limit = 8): Promise<WebSearchResult[]> {
     if (!this.apiKey) {
-      throw new Error('PORTAL_SEARCH_API_KEY not configured');
+      // Allow heuristic discovery from university website seeds when Serper is unset.
+      return [];
     }
 
     const res = await fetch(this.endpoint, {

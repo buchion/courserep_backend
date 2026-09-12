@@ -33,7 +33,7 @@ export class PortalDiscoveryService {
 
     const seeds = new Set<string>();
     for (const r of results) seeds.add(r.url);
-    if (input.website) seeds.add(input.website);
+    for (const url of this.websiteSeedUrls(input.website)) seeds.add(url);
 
     const metas = await Promise.all(
       Array.from(seeds)
@@ -55,6 +55,30 @@ export class PortalDiscoveryService {
     }
 
     return this.heuristicRanking(enriched);
+  }
+
+  /** When web search is unavailable, still probe the school site + common portal hosts. */
+  private websiteSeedUrls(website?: string): string[] {
+    if (!website) return [];
+    const seeds = [website];
+    try {
+      const base = new URL(website);
+      const host = base.hostname.replace(/^www\./i, '');
+      const origin = base.origin;
+      seeds.push(
+        `${origin}/login`,
+        `${origin}/student`,
+        `${origin}/portal`,
+        `https://portal.${host}`,
+        `https://lms.${host}`,
+        `https://canvas.${host}`,
+        `https://moodle.${host}`,
+        `https://blackboard.${host}`,
+      );
+    } catch {
+      // Ignore invalid website URLs.
+    }
+    return seeds;
   }
 
   private heuristicScore(meta: PageMetadata): number {
