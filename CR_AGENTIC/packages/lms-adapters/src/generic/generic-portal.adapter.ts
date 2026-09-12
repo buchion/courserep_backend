@@ -278,20 +278,20 @@ export class GenericPortalAdapter implements ILmsAdapter {
     config: GenericPortalConfig = DEFAULT_CONFIG,
   ): Promise<LmsProfile | null> {
     const start = page.url();
-    const candidates = [
-      '?pg=biodata',
-      '?pg=home',
-      config.paths?.profile,
-      '/profile',
-    ].filter(Boolean) as string[];
+    // Prefer in-app query pages; avoid absolute "/profile" which can leave /portalplus/.
+    const candidates = ['?pg=biodata', '?pg=home', config.paths?.profile].filter(
+      Boolean,
+    ) as string[];
 
     for (const path of candidates) {
       try {
         const target = path.startsWith('?')
           ? this.withQuery(start, path)
-          : new URL(path, start).toString();
-        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 12_000 });
-        await page.waitForTimeout(500);
+          : path.startsWith('http')
+            ? path
+            : new URL(path.replace(/^\//, ''), start.endsWith('/') ? start : start + '/').toString();
+        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+        await page.waitForTimeout(800);
         const text = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
         const parsed = this.parseLabeledProfile(text);
         if (parsed) return parsed;
