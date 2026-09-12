@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: GenericPortalConfig = {
     materialLink: 'a.material-link, [data-file-link], a[href*="download"]',
     materialTitle: '.material-title, [data-file-name]',
     downloadLink: 'a[download], a[href*="download"]',
-    username: 'input[name="username"], input[name="email"], input[type="email"], #username, #email',
+    username: 'input[name="username"], input[name="email"], input[name="matric_number"], input[name="matric"], input[name="student_id"], input[name="studentId"], input[type="email"], #username, #email, #matric_number, #matric',
     password: 'input[name="password"], input[type="password"], #password',
     submit: 'button[type="submit"], input[type="submit"]',
     assignmentList: '.assignment, .assignment-item, [data-assignment]',
@@ -65,16 +65,41 @@ export class GenericPortalAdapter implements ILmsAdapter {
     credentials: { username: string; password: string },
     config: GenericPortalConfig = DEFAULT_CONFIG,
   ): Promise<boolean> {
-    const base = page.url();
-    const loginPath = config.paths?.login ?? DEFAULT_CONFIG.paths!.login!;
-    await page.goto(new URL(loginPath, base).toString(), {
-      waitUntil: 'domcontentloaded',
-      timeout: 60_000,
-    });
-
     const userSel = config.selectors?.username ?? DEFAULT_CONFIG.selectors!.username!;
     const passSel = config.selectors?.password ?? DEFAULT_CONFIG.selectors!.password!;
     const submitSel = config.selectors?.submit ?? DEFAULT_CONFIG.selectors!.submit!;
+
+    // If the confirmed login URL already has a form, stay put; otherwise try common paths.
+    const passwordProbe = page.locator(passSel).first();
+    if ((await passwordProbe.count()) === 0) {
+      const base = page.url();
+      const candidates = [
+        config.paths?.login,
+        '/portalplus/',
+        '/portalplus/login',
+        '/portal/',
+        '/login',
+        '/',
+      ].filter(Boolean) as string[];
+      for (const path of candidates) {
+        try {
+          await page.goto(new URL(path, base).toString(), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30_000,
+          });
+          await page.waitForTimeout(1500);
+          if ((await page.locator(passSel).first().count()) > 0) break;
+        } catch {
+          // try next path
+        }
+      }
+    }
+
+    try {
+      await page.waitForSelector(passSel, { timeout: 15_000 });
+    } catch {
+      return false;
+    }
 
     const username = page.locator(userSel).first();
     const password = page.locator(passSel).first();
