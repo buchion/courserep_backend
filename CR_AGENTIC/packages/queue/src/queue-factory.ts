@@ -32,7 +32,7 @@ export function createWorker<T = unknown>(
     connection: getConnection(),
     prefix: 'cr:agent:bull',
     concurrency: policy.concurrency,
-    lockDuration: 120_000,
+    lockDuration: policy.lockDuration ?? 120_000,
   });
 }
 
