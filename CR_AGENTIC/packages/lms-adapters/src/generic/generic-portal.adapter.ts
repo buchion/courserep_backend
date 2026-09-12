@@ -302,7 +302,9 @@ export class GenericPortalAdapter implements ILmsAdapter {
         const displayName =
           (await page.locator('h1, h2, .profile-name, .user-name').first().textContent().catch(() => null))?.trim() ||
           undefined;
-        if (email || displayName) return { displayName, email };
+        if (email || (displayName && !/^dashboard$/i.test(displayName))) {
+          return { displayName, email };
+        }
       } catch {
         // try next candidate
       }
@@ -318,19 +320,42 @@ export class GenericPortalAdapter implements ILmsAdapter {
     return u.toString();
   }
 
-  private parseLabeledProfile(text: string): LmsProfile | null {
+  parseLabeledProfile(text: string): LmsProfile | null {
     const get = (label: string) => {
-      const re = new RegExp(label + '\\s*[:\\t]+\\s*([^\\n\\r]+)', 'i');
-      const m = re.exec(text);
-      return m?.[1]?.trim() || undefined;
+      const re = new RegExp(
+        '(?:^|[\\n\\r])\\s*' + label + '\\s*[:\\t]+\\s*([^\\n\\r]+)',
+        'i',
+      );
+      const m = re.exec('\n' + text);
+      return m?.[1]?.trim().replace(/\s+/g, ' ') || undefined;
     };
-    const displayName = get('Full Name') || get('Name');
+    const displayName = get('Full Name');
     const studentId = get('Matric number') || get('Matric No') || get('Matric');
     const email = get('Email');
     const departmentName = get('Department');
-    const academicLevelName = get('Level') || get('Programme');
-    if (!displayName && !studentId && !email) return null;
-    return { displayName, email, studentId, departmentName, academicLevelName };
+    const academicLevelName = get('Level');
+    if (displayName || studentId || email) {
+      return { displayName, email, studentId, departmentName, academicLevelName };
+    }
+    // Dashboard cards: matric + ALL-CAPS name line, no "Full Name:" labels.
+    const matric = /\b(F\/[A-Z0-9/]+)\b/i.exec(text)?.[1];
+    const nameLine = text
+      .split(/\n/)
+      .map((l) => l.trim().replace(/\s+/g, ' '))
+      .find(
+        (l) =>
+          /^[A-Z][A-Z\s.'-]{5,}$/.test(l) &&
+          !/DASHBOARD|SEMESTER|STATUS|DOWNLOAD|ACADEMIC|CURRENT|COLLEGE|HELP|SETTINGS/i.test(
+            l,
+          ),
+      );
+    if (!matric && !nameLine) return null;
+    return {
+      displayName: nameLine,
+      studentId: matric,
+      departmentName: undefined,
+      academicLevelName: undefined,
+    };
   }
 
   async listMaterials(
