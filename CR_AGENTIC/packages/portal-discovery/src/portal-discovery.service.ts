@@ -143,12 +143,24 @@ export class PortalDiscoveryService {
       score += 0.06;
     }
 
-    // Live login form is the strongest signal that the seed is real.
-    if (meta.hasLoginForm) score += 0.4;
-    else score -= 0.25;
+    // Live password form is strongest, but many NG student portals are JS apps
+    // with no password field in the initial HTML (UNILAG/COOU/YabaTech).
+    if (meta.hasLoginForm) {
+      score += 0.4;
+    } else if (PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host)) {
+      if (title && !/404|403|forbidden|not found|bad gateway|error/i.test(title)) {
+        score += 0.2;
+      } else {
+        score -= 0.1;
+      }
+    } else {
+      score -= 0.25;
+    }
 
     if (CONTENT_PATH_RE.test(path)) score -= 0.35;
-    if (path === '/' || path === '') score -= 0.15;
+    if ((path === '/' || path === '') && !(PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host))) {
+      score -= 0.15;
+    }
 
     return Math.max(0, Math.min(1, score));
   }
