@@ -256,11 +256,33 @@ export class DeepScrapeProcessor {
     }
     logger.info({ onboardingSessionId, count: courses.length, home }, 'Scraped courses');
 
-    // Identity often appears on the same dashboard that yielded programme/courses.
+    // Prefer structured signals we already extracted (e.g. programme:<matric>).
+    for (const course of courses) {
+      const fromExt = /^programme:(.+)$/i.exec(course.externalId || '')?.[1];
+      if (!fromExt && !course.title) continue;
+      const synthetic = [
+        fromExt ? `Matric number: ${fromExt}` : '',
+        course.title ? `Programme: ${course.title}` : '',
+        course.title || '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      await this.harvestIdentityFromText(
+        synthetic,
+        onboardingSessionId,
+        userId,
+        'course-record',
+      ).catch((err) => logger.warn({ err, onboardingSessionId }, 'course-record harvest failed'));
+      break;
+    }
+
+    // Also try live page text when available.
     const dashText = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
-    await this.harvestIdentityFromText(dashText, onboardingSessionId, userId, 'courses-page').catch(
-      (err) => logger.warn({ err, onboardingSessionId }, 'identity harvest failed'),
-    );
+    if (dashText.length > 40) {
+      await this.harvestIdentityFromText(dashText, onboardingSessionId, userId, 'courses-page').catch(
+        (err) => logger.warn({ err, onboardingSessionId }, 'identity harvest failed'),
+      );
+    }
 
     // Then try biodata/result pages for richer profile + GPA tables.
     await this.capturePortalAcademics(page, home, onboardingSessionId, userId);
@@ -278,7 +300,7 @@ export class DeepScrapeProcessor {
     source: string,
   ): Promise<boolean> {
     const body = (text || '').trim();
-    if (body.length < 40) return false;
+    if (body.length < 20) return false;
 
     let profile: {
       displayName?: string;
