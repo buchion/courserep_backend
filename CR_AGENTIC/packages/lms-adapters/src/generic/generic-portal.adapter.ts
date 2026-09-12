@@ -166,7 +166,7 @@ export class GenericPortalAdapter implements ILmsAdapter {
         await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 20_000 });
         await page.waitForTimeout(800);
         const text = ((await page.locator('body').innerText().catch(() => '')) || '').toLowerCase();
-        if (/access is restricted|graduated/i.test(text) && /course registration/i.test(text)) {
+        if (/access is restricted/i.test(text)) {
           continue;
         }
         const elements = await page.locator(courseSelector).all();
