@@ -18,6 +18,21 @@ import {
 } from './dto/onboarding.request.dto';
 
 @Injectable()
+
+/** Keep path prefixes like /portalplus/ instead of collapsing to origin-only. */
+export function portalBaseFromLoginUrl(loginUrl: string): string {
+  const u = new URL(loginUrl);
+  let path = u.pathname || '/';
+  path = path.replace(/\/login\/?$/i, '/');
+  const last = path.split('/').filter(Boolean).pop() ?? '';
+  if (last && /\.[a-z0-9]+$/i.test(last)) {
+    path = path.replace(/\/[^/]+$/, '/');
+  }
+  if (!path.endsWith('/')) path += '/';
+  if (path === '/') return u.origin;
+  return `${u.origin}${path}`;
+}
+
 export class PortalService {
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -129,7 +144,7 @@ export class PortalService {
       );
     }
 
-    const baseUrl = new URL(loginUrl).origin;
+    const baseUrl = portalBaseFromLoginUrl(loginUrl);
 
     const account = await prisma.connectedAccount.create({
       data: {
