@@ -27,7 +27,7 @@ const PHASE_ORDER: DeepScrapePhase[] = [
 
 const ASSIGNMENT_PATHS = ['?pg=home', '/assignments', '/assignment', '/homework', '/coursework', '/calendar'];
 const TIMETABLE_PATHS = ['?pg=home', '/timetable', '/schedule', '/calendar', '/academic-calendar', '/events'];
-const PROFILE_PATHS = ['?pg=biodata', '?pg=home', '/profile', '/user/profile', '/my/profile', '/account'];
+const PROFILE_PATHS = ['?pg=biodata', '?pg=home', '/profile'];
 
 export class DeepScrapeProcessor {
   private readonly registry = new LmsAdapterRegistry();
@@ -90,23 +90,30 @@ export class DeepScrapeProcessor {
     const page = await context.newPage();
 
     try {
-      switch (phase) {
-        case 'profile':
-          await this.scrapeProfile(page, account, onboardingSessionId, userId, config);
-          break;
-        case 'courses':
-          await this.scrapeCourses(page, account, onboardingSessionId, userId, config);
-          break;
-        case 'assignments':
-          await this.scrapeAssignments(page, account, onboardingSessionId, userId, config);
-          break;
-        case 'timetable':
-          await this.scrapeTimetable(page, account, onboardingSessionId, userId, config);
-          break;
-        case 'transcript':
-        case 'calendar':
-          // Legacy phases no longer in the default chain; keep no-ops for old jobs.
-          break;
+      try {
+        switch (phase) {
+          case 'profile':
+            await this.scrapeProfile(page, account, onboardingSessionId, userId, config);
+            break;
+          case 'courses':
+            await this.scrapeCourses(page, account, onboardingSessionId, userId, config);
+            break;
+          case 'assignments':
+            await this.scrapeAssignments(page, account, onboardingSessionId, userId, config);
+            break;
+          case 'timetable':
+            await this.scrapeTimetable(page, account, onboardingSessionId, userId, config);
+            break;
+          case 'transcript':
+          case 'calendar':
+            // Legacy phases no longer in the default chain; keep no-ops for old jobs.
+            break;
+        }
+      } catch (err) {
+        logger.warn(
+          { err, onboardingSessionId, phase },
+          'Deep scrape phase failed; continuing to next phase',
+        );
       }
 
       await writeAuditLog({
@@ -114,11 +121,11 @@ export class DeepScrapeProcessor {
         action: `deep_scrape_${phase}`,
         resourceType: 'onboarding_session',
         resourceId: onboardingSessionId,
-      });
+      }).catch(() => undefined);
 
       await this.enqueueNextPhase(job.data);
     } finally {
-      await context.close();
+      await context.close().catch(() => undefined);
     }
   }
 
@@ -159,7 +166,11 @@ export class DeepScrapeProcessor {
     config?: GenericPortalConfig,
   ): Promise<void> {
     const home = await this.resolvePortalHome(account);
-    await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    try {
+      await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+    } catch (err) {
+      logger.warn({ err, home, onboardingSessionId }, 'Portal home navigation failed');
+    }
     const adapter = this.safeAdapter(account.lmsType);
     let profile = adapter.extractProfile
       ? await adapter.extractProfile(page, config).catch(() => null)
@@ -185,6 +196,9 @@ export class DeepScrapeProcessor {
               ? extracted.academicLevelName
               : undefined,
         };
+        if (!profile.displayName && !profile.studentId && !profile.email) {
+          profile = null;
+        }
       }
     }
 
@@ -461,7 +475,7 @@ export class DeepScrapeProcessor {
           : new URL(path, baseUrl).toString();
         await page.goto(target, {
           waitUntil: 'domcontentloaded',
-          timeout: 12_000,
+          timeout: 8_000,
         });
         const text = (await page.locator('body').innerText()).trim();
         if (text.length > 200) return text.slice(0, 12_000);
