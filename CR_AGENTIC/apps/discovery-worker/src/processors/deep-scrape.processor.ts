@@ -17,6 +17,7 @@ import type { LlmCompletionClient } from '@cr-agentic/portal-discovery';
 import { DiscoveryBrowser } from '../browser/discovery-browser';
 
 const logger = createLogger('deep-scrape-processor');
+// BUILD_STAMP: 20260912i-identity-upsert-sanitize
 
 const PHASE_ORDER: DeepScrapePhase[] = [
   'profile',
@@ -340,27 +341,38 @@ export class DeepScrapeProcessor {
       };
     }
 
-    await prisma.discoveredPortalProfile.upsert({
-      where: { onboardingSessionId },
-      create: {
-        onboardingSessionId,
-        userId,
-        displayName: profile.displayName,
-        email: profile.email,
-        studentId: profile.studentId,
-        departmentName: profile.departmentName,
-        academicLevelName: profile.academicLevelName,
-        rawJson: { ...profile, source },
-      },
-      update: {
-        displayName: profile.displayName ?? undefined,
-        email: profile.email ?? undefined,
-        studentId: profile.studentId ?? undefined,
-        departmentName: profile.departmentName ?? undefined,
-        academicLevelName: profile.academicLevelName ?? undefined,
-        rawJson: { ...profile, source },
-      },
-    });
+    const compact = Object.fromEntries(
+      Object.entries({ ...profile, source }).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+    );
+    try {
+      await prisma.discoveredPortalProfile.upsert({
+        where: { onboardingSessionId },
+        create: {
+          onboardingSessionId,
+          userId,
+          displayName: profile.displayName || null,
+          email: profile.email || null,
+          studentId: profile.studentId || null,
+          departmentName: profile.departmentName || null,
+          academicLevelName: profile.academicLevelName || null,
+          rawJson: compact,
+        },
+        update: {
+          ...(profile.displayName ? { displayName: profile.displayName } : {}),
+          ...(profile.email ? { email: profile.email } : {}),
+          ...(profile.studentId ? { studentId: profile.studentId } : {}),
+          ...(profile.departmentName ? { departmentName: profile.departmentName } : {}),
+          ...(profile.academicLevelName ? { academicLevelName: profile.academicLevelName } : {}),
+          rawJson: compact,
+        },
+      });
+    } catch (err) {
+      logger.error(
+        { err, onboardingSessionId, source, compact },
+        'Portal identity upsert failed',
+      );
+      throw err;
+    }
     logger.info(
       { onboardingSessionId, source, studentId: profile.studentId, displayName: profile.displayName },
       'Harvested portal identity',
