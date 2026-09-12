@@ -1,7 +1,13 @@
-import { prisma, OnboardingStage, recordOnboardingTransition } from '@cr-agentic/database';
+import {
+  prisma,
+  OnboardingStage,
+  recordOnboardingTransition,
+  getKnownStudentPortalUrl,
+} from '@cr-agentic/database';
 import { createLogger, writeAuditLog } from '@cr-agentic/observability';
 import { PortalDiscoveryService, PortalCandidateResult } from '@cr-agentic/portal-discovery';
 import type { DiscoveryFindPortalJob } from '@cr-agentic/shared';
+
 
 const logger = createLogger('find-portal-processor');
 
@@ -17,21 +23,30 @@ export class FindPortalProcessor {
     if (!session) throw new Error('Onboarding session not found');
 
     try {
-      const candidates = await this.discovery.discover({
+      const knownPortalUrl = await getKnownStudentPortalUrl({
+        universityId: session.universityId,
+        universityName: session.universityName,
+      });
+
+      let candidates = await this.discovery.discover({
         universityName: job.data.universityName,
         country: job.data.country,
         website: job.data.website,
+        knownPortalUrl: knownPortalUrl ?? undefined,
       });
 
-      await this.persistCandidates(onboardingSessionId, candidates);
+      candidates = this.ensureKnownPortalFirst(candidates, knownPortalUrl);
 
-      await this.applyCacheHints(session.universityId, candidates);
+      await this.persistCandidates(onboardingSessionId, candidates);
 
       await recordOnboardingTransition(
         onboardingSessionId,
         session.stage,
         OnboardingStage.PORTAL_SUGGESTED,
-        { candidateCount: candidates.length },
+        {
+          candidateCount: candidates.length,
+          knownPortalUrl: knownPortalUrl ?? null,
+        },
       );
 
       await writeAuditLog({
@@ -39,10 +54,16 @@ export class FindPortalProcessor {
         action: 'portal_discovery_completed',
         resourceType: 'onboarding_session',
         resourceId: onboardingSessionId,
-        metadata: { candidateCount: candidates.length },
+        metadata: {
+          candidateCount: candidates.length,
+          usedKnownPortal: Boolean(knownPortalUrl),
+        },
       });
 
-      logger.info({ onboardingSessionId, count: candidates.length }, 'Portal discovery complete');
+      logger.info(
+        { onboardingSessionId, count: candidates.length, knownPortalUrl },
+        'Portal discovery complete',
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await recordOnboardingTransition(
@@ -54,6 +75,40 @@ export class FindPortalProcessor {
       );
       throw err;
     }
+  }
+
+  /**
+   * If this school has a promoted known-good portal (>=5 successful logins),
+   * put it first. Do not write studentPortalUrl from discovery rankings alone.
+   */
+  private ensureKnownPortalFirst(
+    candidates: PortalCandidateResult[],
+    knownPortalUrl: string | null,
+  ): PortalCandidateResult[] {
+    if (!knownPortalUrl) return candidates;
+    const knownNorm = knownPortalUrl.replace(/\/+$/, '').toLowerCase();
+    const rest = candidates.filter(
+      (c) => c.loginUrl.replace(/\/+$/, '').toLowerCase() !== knownNorm,
+    );
+    const existing = candidates.find(
+      (c) => c.loginUrl.replace(/\/+$/, '').toLowerCase() === knownNorm,
+    );
+    const head: PortalCandidateResult = existing
+      ? {
+          ...existing,
+          confidence: Math.max(existing.confidence, 0.99),
+          evidence: Array.from(
+            new Set([...(existing.evidence || []), 'known-good-portal:5+ successful logins']),
+          ),
+        }
+      : {
+          loginUrl: knownPortalUrl,
+          portalName: 'Known student portal',
+          lmsType: 'GENERIC' as const,
+          confidence: 0.99,
+          evidence: ['known-good-portal:5+ successful logins'],
+        };
+    return [head, ...rest];
   }
 
   private async persistCandidates(
@@ -73,24 +128,5 @@ export class FindPortalProcessor {
         source: 'WEB_SEARCH' as const,
       })),
     });
-  }
-
-  /** Caches the top candidate's portal hint per university for faster re-onboarding. */
-  private async applyCacheHints(
-    universityId: string | null,
-    candidates: PortalCandidateResult[],
-  ): Promise<void> {
-    if (!universityId || candidates.length === 0) return;
-    const top = candidates[0];
-    await prisma.universityCache
-      .update({
-        where: { universityId },
-        data: {
-          studentPortalUrl: top.loginUrl,
-          lmsType: top.lmsType,
-          portalDiscoveredAt: new Date(),
-        },
-      })
-      .catch(() => undefined);
   }
 }
