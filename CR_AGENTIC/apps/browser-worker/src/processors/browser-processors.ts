@@ -1,5 +1,5 @@
 import { Job } from 'bullmq';
-import { prisma, OnboardingStage, recordOnboardingTransition } from '@cr-agentic/database';
+import { prisma, OnboardingStage, recordOnboardingTransition, recordSuccessfulPortalLogin } from '@cr-agentic/database';
 import { createLogger, writeAuditLog, metrics, startSpan } from '@cr-agentic/observability';
 import { UserLock, LmsRateLimiter, moveToDlq, enqueueJob } from '@cr-agentic/queue';
 import { QUEUE_NAMES, AgentEventType } from '@cr-agentic/shared';
@@ -243,6 +243,13 @@ export class BrowserProcessors {
           OnboardingStage.SESSION_CAPTURED,
         );
 
+        await this.rememberSuccessfulPortalLogin({
+          onboardingSessionId: job.data.onboardingSessionId,
+          universityId: account.universityId,
+          loginUrl: targetUrl,
+          lmsType: account.lmsType,
+        });
+
         metrics.increment('browser.credential_login.success');
         await writeAuditLog({
           actorId: job.data.userId,
@@ -331,6 +338,16 @@ export class BrowserProcessors {
           OnboardingStage.SESSION_CAPTURED,
         );
 
+        const candidate = account.portalCandidateId
+          ? await prisma.portalCandidate.findUnique({ where: { id: account.portalCandidateId } })
+          : null;
+        await this.rememberSuccessfulPortalLogin({
+          onboardingSessionId: job.data.onboardingSessionId,
+          universityId: account.universityId,
+          loginUrl: candidate?.loginUrl || account.lmsBaseUrl,
+          lmsType: account.lmsType,
+        });
+
         metrics.increment('browser.validate.success');
         await writeAuditLog({
           actorId: job.data.userId,
@@ -342,6 +359,38 @@ export class BrowserProcessors {
         await controller.releaseContext(context);
       }
     });
+  }
+
+
+  private async rememberSuccessfulPortalLogin(opts: {
+    onboardingSessionId: string;
+    universityId?: string | null;
+    loginUrl: string;
+    lmsType?: string | null;
+  }): Promise<void> {
+    try {
+      const session = await prisma.onboardingSession.findUnique({
+        where: { id: opts.onboardingSessionId },
+      });
+      if (!session?.universityName) return;
+      const result = await recordSuccessfulPortalLogin({
+        universityId: opts.universityId ?? session.universityId,
+        universityName: session.universityName,
+        loginUrl: opts.loginUrl,
+        lmsType: opts.lmsType,
+      });
+      logger.info(
+        {
+          onboardingSessionId: opts.onboardingSessionId,
+          count: result.count,
+          promoted: result.promoted,
+          studentPortalUrl: result.studentPortalUrl,
+        },
+        'Recorded portal login success for university cache',
+      );
+    } catch (err) {
+      logger.warn({ err, onboardingSessionId: opts.onboardingSessionId }, 'Failed to record portal login success');
+    }
   }
 
   private async loadAdapterConfig(
