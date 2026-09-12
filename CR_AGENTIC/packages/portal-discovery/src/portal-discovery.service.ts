@@ -111,6 +111,9 @@ export class PortalDiscoveryService {
     const url = meta.finalUrl;
     if (CMS_AUTH_RE.test(url)) return 0.05;
 
+    // Failed fetch / empty body — do not promote invented DNS seeds.
+    if (!meta.htmlSample && !meta.hasLoginForm && !meta.title) return 0.02;
+
     let host = '';
     let path = '/';
     try {
@@ -121,21 +124,29 @@ export class PortalDiscoveryService {
       return 0;
     }
 
-    let score = 0;
-    if (ACADEMIC_TLD_RE.test(url)) score += 0.2;
-
-    if (PORTAL_HOST_RE.test(host)) score += 0.45;
-    else if (LMS_HOST_RE.test(host)) score += 0.4;
-
-    if (/\/login\/?$/i.test(path) && (PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host))) {
-      score += 0.2;
-    } else if (/\/(portal|studentportal|students)(\/|$)/i.test(path)) {
-      score += 0.15;
-    } else if (/login|signin|sso|auth/i.test(path)) {
-      score += 0.08;
+    const title = meta.title ?? '';
+    if (/404|403|forbidden|not found|bad gateway|error/i.test(title)) {
+      return 0.08;
     }
 
-    if (meta.hasLoginForm) score += 0.25;
+    let score = 0;
+    if (ACADEMIC_TLD_RE.test(url)) score += 0.15;
+
+    if (PORTAL_HOST_RE.test(host)) score += 0.35;
+    else if (LMS_HOST_RE.test(host)) score += 0.35;
+
+    if (/\/login\/?$/i.test(path) && (PORTAL_HOST_RE.test(host) || LMS_HOST_RE.test(host))) {
+      score += 0.15;
+    } else if (/\/(portal|studentportal|students)(\/|$)/i.test(path)) {
+      score += 0.12;
+    } else if (/login|signin|sso|auth/i.test(path)) {
+      score += 0.06;
+    }
+
+    // Live login form is the strongest signal that the seed is real.
+    if (meta.hasLoginForm) score += 0.4;
+    else score -= 0.25;
+
     if (CONTENT_PATH_RE.test(path)) score -= 0.35;
     if (path === '/' || path === '') score -= 0.15;
 
