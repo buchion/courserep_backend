@@ -172,95 +172,7 @@ export class DeepScrapeProcessor {
     config?: GenericPortalConfig,
   ): Promise<void> {
     const home = await this.resolvePortalHome(account);
-    logger.info({ onboardingSessionId, home }, 'Deep scrape profile home');
-
-    // Exact flow that works against YabaTech portalplus in live probes.
-    for (const pg of ['home', 'biodata']) {
-      try {
-        await page.goto(this.portalPage(home, pg), {
-          waitUntil: 'domcontentloaded',
-          timeout: 25_000,
-        });
-        await page.waitForTimeout(1000);
-      } catch (err) {
-        logger.warn({ err, onboardingSessionId, pg }, 'Profile page navigation failed');
-      }
-    }
-
-    const adapter = this.safeAdapter(account.lmsType);
-    let profile =
-      adapter.extractProfile
-        ? await adapter.extractProfile(page, config).catch((err) => {
-            logger.warn({ err, onboardingSessionId }, 'extractProfile failed');
-            return null;
-          })
-        : null;
-
-    if (!profile) {
-      const body = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
-      if (body && adapter instanceof GenericPortalAdapter) {
-        profile = adapter.parseLabeledProfile(body);
-      }
-      if (!profile && body) {
-        const matric = /\b(F\/[A-Z0-9/]+)\b/i.exec(body)?.[1];
-        const full = /Full Name:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
-        const email = /Email:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
-        const department = /Department:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
-        const level = /(?:^|\n)\s*Level:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
-        if (full || matric || email) {
-          profile = {
-            displayName: full,
-            studentId: matric,
-            email,
-            departmentName: department,
-            academicLevelName: level,
-          };
-        }
-      }
-    }
-
-    if (profile) {
-      await prisma.discoveredPortalProfile.upsert({
-        where: { onboardingSessionId },
-        create: {
-          onboardingSessionId,
-          userId,
-          displayName: profile.displayName,
-          email: profile.email,
-          studentId: profile.studentId,
-          departmentName: profile.departmentName,
-          academicLevelName: profile.academicLevelName,
-          rawJson: profile as object,
-        },
-        update: {
-          displayName: profile.displayName,
-          email: profile.email,
-          studentId: profile.studentId,
-          departmentName: profile.departmentName,
-          academicLevelName: profile.academicLevelName,
-          rawJson: profile as object,
-        },
-      });
-      await prisma.onboardingSession.update({
-        where: { id: onboardingSessionId },
-        data: {
-          ...(profile.departmentName ? { departmentName: profile.departmentName } : {}),
-          ...(profile.academicLevelName
-            ? { academicLevelName: profile.academicLevelName }
-            : {}),
-        },
-      });
-      logger.info(
-        { onboardingSessionId, studentId: profile.studentId, displayName: profile.displayName },
-        'Scraped portal profile',
-      );
-    } else {
-      logger.warn({ onboardingSessionId, home, url: page.url() }, 'Portal profile not found');
-    }
-
-    await this.scrapeAcademicResults(page, home, onboardingSessionId, userId).catch((err) => {
-      logger.warn({ err, onboardingSessionId }, 'Academic results scrape skipped');
-    });
+    await this.capturePortalplusAcademics(page, home, onboardingSessionId, userId);
   }
 
   /** YabaTech-style semester result tables (?pg=result). */
@@ -321,7 +233,12 @@ export class DeepScrapeProcessor {
     config?: GenericPortalConfig,
   ): Promise<void> {
     const home = await this.resolvePortalHome(account);
-    await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Session cookies are sometimes not ready in the earlier profile job; capture
+    // biodata + results here where programme scraping already succeeds.
+    await this.capturePortalplusAcademics(page, home, onboardingSessionId, userId);
+
+    await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
     const adapter = this.safeAdapter(account.lmsType);
     const courses = await adapter.listCourses(page, config).catch(() => []);
 
@@ -337,6 +254,105 @@ export class DeepScrapeProcessor {
       });
     }
     logger.info({ onboardingSessionId, count: courses.length }, 'Scraped courses');
+  }
+
+  /** Retrying biodata/result capture used by profile + courses phases. */
+  private async capturePortalplusAcademics(
+    page: Page,
+    home: string,
+    onboardingSessionId: string,
+    userId: string,
+  ): Promise<void> {
+    const existing = await prisma.discoveredPortalProfile.findUnique({
+      where: { onboardingSessionId },
+    });
+    if (!existing) {
+      let profile: {
+        displayName?: string;
+        email?: string;
+        studentId?: string;
+        departmentName?: string;
+        academicLevelName?: string;
+      } | null = null;
+
+      for (let attempt = 0; attempt < 3 && !profile; attempt++) {
+        try {
+          await page.goto(this.portalPage(home, 'biodata'), {
+            waitUntil: 'domcontentloaded',
+            timeout: 25_000,
+          });
+          await page.waitForTimeout(1200 + attempt * 800);
+        } catch (err) {
+          logger.warn({ err, onboardingSessionId, attempt }, 'biodata nav failed');
+          continue;
+        }
+        const body = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+        if (!body) continue;
+        const adapter = this.safeAdapter('GENERIC');
+        if (adapter instanceof GenericPortalAdapter) {
+          profile = adapter.parseLabeledProfile(body);
+        }
+        if (!profile) {
+          const matric = /\b(F\/[A-Z0-9/]+)\b/i.exec(body)?.[1];
+          const full = /Full Name:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
+          const email = /Email:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
+          const department = /Department:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
+          const level = /(?:^|\n)\s*Level:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
+          if (full || matric || email) {
+            profile = {
+              displayName: full,
+              studentId: matric,
+              email,
+              departmentName: department,
+              academicLevelName: level,
+            };
+          }
+        }
+        if (!profile) {
+          logger.warn(
+            { onboardingSessionId, attempt, url: page.url(), sample: body.slice(0, 180) },
+            'biodata parse miss',
+          );
+        }
+      }
+
+      if (profile) {
+        await prisma.discoveredPortalProfile.upsert({
+          where: { onboardingSessionId },
+          create: {
+            onboardingSessionId,
+            userId,
+            displayName: profile.displayName,
+            email: profile.email,
+            studentId: profile.studentId,
+            departmentName: profile.departmentName,
+            academicLevelName: profile.academicLevelName,
+            rawJson: profile as object,
+          },
+          update: {
+            displayName: profile.displayName,
+            email: profile.email,
+            studentId: profile.studentId,
+            departmentName: profile.departmentName,
+            academicLevelName: profile.academicLevelName,
+            rawJson: profile as object,
+          },
+        });
+        logger.info(
+          { onboardingSessionId, studentId: profile.studentId, displayName: profile.displayName },
+          'Captured portal profile',
+        );
+      }
+    }
+
+    const recCount = await prisma.discoveredAcademicRecord.count({
+      where: { onboardingSessionId },
+    });
+    if (recCount === 0) {
+      await this.scrapeAcademicResults(page, home, onboardingSessionId, userId).catch((err) => {
+        logger.warn({ err, onboardingSessionId }, 'Academic results scrape skipped');
+      });
+    }
   }
 
   private async scrapeAssignments(
