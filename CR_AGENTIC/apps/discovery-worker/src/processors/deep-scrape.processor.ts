@@ -189,7 +189,8 @@ export class DeepScrapeProcessor {
   ): Promise<void> {
     const resultUrl = this.portalPage(home, 'result');
     await page.goto(resultUrl, { waitUntil: 'domcontentloaded', timeout: 25_000 });
-    await page.waitForTimeout(1000);
+    await page.waitForSelector('table', { timeout: 8_000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
     const text = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
     if (!/academic session|cgpa|gpa/i.test(text)) {
       logger.warn({ onboardingSessionId, resultUrl, url: page.url() }, 'No GPA table markers');
@@ -280,42 +281,20 @@ export class DeepScrapeProcessor {
         academicLevelName?: string;
       } | null = null;
 
-      // Warm session on dashboard first (same path that yields programme text).
-      try {
-        await page.goto(this.portalPage(home, 'home'), {
-          waitUntil: 'domcontentloaded',
-          timeout: 25_000,
-        });
-        await page.waitForTimeout(1000);
-      } catch (err) {
-        logger.warn({ err, onboardingSessionId }, 'home warm failed');
-      }
-
-      for (let attempt = 0; attempt < 2 && !profile; attempt++) {
-        try {
-          await page.goto(this.portalPage(home, 'biodata'), {
-            waitUntil: 'domcontentloaded',
-            timeout: 25_000,
-          });
-          await page.waitForTimeout(1500);
-        } catch (err) {
-          logger.warn({ err, onboardingSessionId, attempt }, 'biodata nav failed');
-          continue;
-        }
-        const body = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
-        if (!body) continue;
-        const adapter = this.safeAdapter('GENERIC');
-        if (adapter instanceof GenericPortalAdapter) {
-          profile = adapter.parseLabeledProfile(body);
-        }
-        if (!profile) {
+      const adapter = this.safeAdapter('GENERIC');
+      const parseBody = (body: string) => {
+        let parsed =
+          adapter instanceof GenericPortalAdapter
+            ? adapter.parseLabeledProfile(body)
+            : null;
+        if (!parsed) {
           const matric = /\b(F\/[A-Z0-9/]+)\b/i.exec(body)?.[1];
           const full = /Full Name:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
           const email = /Email:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
           const department = /Department:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
           const level = /(?:^|\n)\s*Level:\s*([^\n\r]+)/i.exec(body)?.[1]?.trim();
           if (full || matric || email) {
-            profile = {
+            parsed = {
               displayName: full,
               studentId: matric,
               email,
@@ -324,11 +303,51 @@ export class DeepScrapeProcessor {
             };
           }
         }
-        if (!profile) {
-          logger.warn(
-            { onboardingSessionId, attempt, url: page.url(), sample: body.slice(0, 180) },
-            'biodata parse miss',
-          );
+        return parsed;
+      };
+
+      // Home dashboard is what deep-scrape already reaches while authenticated.
+      try {
+        await page.goto(this.portalPage(home, 'home'), {
+          waitUntil: 'domcontentloaded',
+          timeout: 25_000,
+        });
+        await page.waitForTimeout(1200);
+        const homeBody = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+        profile = homeBody ? parseBody(homeBody) : null;
+        logger.info(
+          {
+            onboardingSessionId,
+            homeUrl: page.url(),
+            homeHit: !!profile,
+            sample: homeBody.slice(0, 160),
+          },
+          'home profile parse',
+        );
+      } catch (err) {
+        logger.warn({ err, onboardingSessionId }, 'home warm failed');
+      }
+
+      // Enrich from biodata when available.
+      if (!profile?.email || !profile?.displayName) {
+        try {
+          await page.goto(this.portalPage(home, 'biodata'), {
+            waitUntil: 'domcontentloaded',
+            timeout: 25_000,
+          });
+          await page.waitForSelector('text=Full Name', { timeout: 8_000 }).catch(() => undefined);
+          await page.waitForTimeout(800);
+          const body = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+          const enriched = body ? parseBody(body) : null;
+          if (enriched) profile = { ...profile, ...enriched };
+          else {
+            logger.warn(
+              { onboardingSessionId, url: page.url(), sample: body.slice(0, 180) },
+              'biodata parse miss',
+            );
+          }
+        } catch (err) {
+          logger.warn({ err, onboardingSessionId }, 'biodata nav failed');
         }
       }
 
