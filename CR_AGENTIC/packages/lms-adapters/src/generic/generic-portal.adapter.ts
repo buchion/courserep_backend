@@ -146,33 +146,70 @@ export class GenericPortalAdapter implements ILmsAdapter {
     page: Page,
     config: GenericPortalConfig = DEFAULT_CONFIG,
   ): Promise<LmsCourse[]> {
-    const coursesPath = config.paths?.courses ?? DEFAULT_CONFIG.paths!.courses!;
-    const base = page.url();
-    const coursesUrl = new URL(coursesPath, base).toString();
-    await page.goto(coursesUrl, { waitUntil: 'domcontentloaded' });
-
+    const start = page.url();
+    const paths = [
+      '?pg=course-registration',
+      config.paths?.courses ?? '/courses',
+      '/course-registration',
+      '/dashboard',
+      '?pg=home',
+    ];
     const courseSelector = config.selectors?.courseLink ?? DEFAULT_CONFIG.selectors!.courseLink!;
     const titleSelector = config.selectors?.courseTitle ?? DEFAULT_CONFIG.selectors!.courseTitle!;
-
-    const elements = await page.locator(courseSelector).all();
     const courses: LmsCourse[] = [];
 
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      const href = (await el.getAttribute('href')) ?? `course-${i}`;
-      const titleEl = el.locator(titleSelector).first();
-      const title =
-        (await titleEl.count()) > 0
-          ? (await titleEl.textContent())?.trim()
-          : (await el.textContent())?.trim();
-      if (!title) continue;
-      courses.push({
-        externalId: href,
-        title,
-        url: new URL(href, base).toString(),
-      });
+    for (const path of paths) {
+      try {
+        const target = path.startsWith('?')
+          ? this.withQuery(start, path)
+          : new URL(path, start).toString();
+        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+        await page.waitForTimeout(800);
+        const text = ((await page.locator('body').innerText().catch(() => '')) || '').toLowerCase();
+        if (/access is restricted|graduated/i.test(text) && /course registration/i.test(text)) {
+          continue;
+        }
+        const elements = await page.locator(courseSelector).all();
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          const href = (await el.getAttribute('href')) ?? `course-${i}`;
+          const titleEl = el.locator(titleSelector).first();
+          const title =
+            (await titleEl.count()) > 0
+              ? (await titleEl.textContent())?.trim()
+              : (await el.textContent())?.trim();
+          if (!title) continue;
+          courses.push({
+            externalId: href,
+            title,
+            url: new URL(href, page.url()).toString(),
+          });
+        }
+        if (courses.length > 0) return courses;
+      } catch {
+        // try next
+      }
     }
 
+    // Fallback: treat programme line on dashboard as a synthetic enrolled programme.
+    try {
+      await page.goto(this.withQuery(start, '?pg=home'), {
+        waitUntil: 'domcontentloaded',
+        timeout: 20_000,
+      });
+      const text = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+      const prog = /ND\s*\([^)]+\)[^\n]*/i.exec(text)?.[0]?.trim();
+      const matric = /F\/[A-Z0-9/]+/i.exec(text)?.[0];
+      if (prog) {
+        courses.push({
+          externalId: matric ? `programme:${matric}` : 'programme:current',
+          title: prog,
+          code: undefined,
+        });
+      }
+    } catch {
+      // ignore
+    }
     return courses;
   }
 
@@ -240,22 +277,63 @@ export class GenericPortalAdapter implements ILmsAdapter {
     page: Page,
     config: GenericPortalConfig = DEFAULT_CONFIG,
   ): Promise<LmsProfile | null> {
-    const path = config.paths?.profile ?? DEFAULT_CONFIG.paths!.profile!;
-    const base = page.url();
-    await page.goto(new URL(path, base).toString(), {
-      waitUntil: 'domcontentloaded',
-      timeout: 30_000,
-    }).catch(() => undefined);
+    const start = page.url();
+    const candidates = [
+      '?pg=biodata',
+      '?pg=home',
+      config.paths?.profile,
+      '/profile',
+      '/user/profile',
+      '/my/profile',
+      '/account',
+    ].filter(Boolean) as string[];
 
-    const email =
-      (await page.locator('a[href^="mailto:"]').first().textContent().catch(() => null))?.trim() ||
-      undefined;
-    const displayName =
-      (await page.locator('h1, h2, .profile-name, .user-name').first().textContent().catch(() => null))?.trim() ||
-      undefined;
+    for (const path of candidates) {
+      try {
+        const target = path.startsWith('?')
+          ? this.withQuery(start, path)
+          : new URL(path, start).toString();
+        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+        await page.waitForTimeout(800);
+        const text = ((await page.locator('body').innerText().catch(() => '')) || '').trim();
+        const parsed = this.parseLabeledProfile(text);
+        if (parsed) return parsed;
 
-    if (!email && !displayName) return null;
-    return { displayName, email };
+        const email =
+          (await page.locator('a[href^="mailto:"]').first().textContent().catch(() => null))?.trim() ||
+          undefined;
+        const displayName =
+          (await page.locator('h1, h2, .profile-name, .user-name').first().textContent().catch(() => null))?.trim() ||
+          undefined;
+        if (email || displayName) return { displayName, email };
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
+  }
+
+  private withQuery(currentUrl: string, query: string): string {
+    const u = new URL(currentUrl);
+    const q = query.startsWith('?') ? query.slice(1) : query;
+    u.search = q;
+    // Keep directory path (e.g. /portalplus/)
+    return u.toString();
+  }
+
+  private parseLabeledProfile(text: string): LmsProfile | null {
+    const get = (label: string) => {
+      const re = new RegExp(label + '\\s*[:\\t]+\\s*([^\\n\\r]+)', 'i');
+      const m = re.exec(text);
+      return m?.[1]?.trim() || undefined;
+    };
+    const displayName = get('Full Name') || get('Name');
+    const studentId = get('Matric number') || get('Matric No') || get('Matric');
+    const email = get('Email');
+    const departmentName = get('Department');
+    const academicLevelName = get('Level') || get('Programme');
+    if (!displayName && !studentId && !email) return null;
+    return { displayName, email, studentId, departmentName, academicLevelName };
   }
 
   async listMaterials(
