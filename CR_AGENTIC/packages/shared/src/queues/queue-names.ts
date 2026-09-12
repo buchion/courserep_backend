@@ -2,6 +2,7 @@ export const QUEUE_NAMES = {
   BROWSER_CONNECT_LMS: 'browser.connect-lms',
   BROWSER_REFRESH_SESSION: 'browser.refresh-session',
   BROWSER_VALIDATE_SESSION: 'browser.validate-session',
+  BROWSER_CREDENTIAL_LOGIN: 'browser.credential-login',
   LMS_CHECK: 'lms.check',
   LMS_DOWNLOAD: 'lms.download',
   AI_SUMMARIZE: 'ai.summarize',

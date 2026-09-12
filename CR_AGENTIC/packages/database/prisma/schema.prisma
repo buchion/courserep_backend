@@ -442,6 +442,9 @@ model OnboardingSession {
 
   portalCandidates   PortalCandidate[]
   discoveredCourses  DiscoveredCourse[]
+  discoveredAssignments DiscoveredAssignment[]
+  discoveredTimetableSlots DiscoveredTimetableSlot[]
+  portalProfile      DiscoveredPortalProfile?
   academicRecords    DiscoveredAcademicRecord[]
   calendarEvents     DiscoveredCalendarEvent[]
   auditEvents        OnboardingAuditEvent[]
@@ -527,6 +530,72 @@ model DiscoveredCourse {
   @@index([onboardingSessionId])
   @@index([userId])
   @@map("discovered_courses")
+}
+
+model DiscoveredAssignment {
+  id                  String    @id @default(uuid()) @db.Uuid
+  onboardingSessionId String    @db.Uuid
+  userId              String    @db.Uuid
+  externalId          String?
+  title               String
+  courseExternalId    String?
+  courseTitle         String?
+  dueAt               DateTime?
+  url                 String?
+  eventType           String?
+  selected            Boolean   @default(true)
+  syncedAt            DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId])
+  @@index([userId])
+  @@map("discovered_assignments")
+}
+
+model DiscoveredTimetableSlot {
+  id                  String    @id @default(uuid()) @db.Uuid
+  onboardingSessionId String    @db.Uuid
+  userId              String    @db.Uuid
+  externalId          String?
+  title               String
+  courseExternalId    String?
+  courseTitle         String?
+  dayOfWeek           Int?
+  startsAt            DateTime?
+  endsAt              DateTime?
+  location            String?
+  selected            Boolean   @default(true)
+  syncedAt            DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([onboardingSessionId])
+  @@index([userId])
+  @@map("discovered_timetable_slots")
+}
+
+model DiscoveredPortalProfile {
+  id                  String   @id @default(uuid()) @db.Uuid
+  onboardingSessionId String   @unique @db.Uuid
+  userId              String   @db.Uuid
+  displayName         String?
+  email               String?
+  studentId           String?
+  departmentName      String?
+  academicLevelName   String?
+  rawJson             Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  onboardingSession OnboardingSession @relation(fields: [onboardingSessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("discovered_portal_profiles")
 }
 
 model DiscoveredAcademicRecord {

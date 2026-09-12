@@ -89,7 +89,10 @@ export interface DiscoveryFindPortalJob {
 }
 
 export type DeepScrapePhase =
+  | 'profile'
   | 'courses'
+  | 'assignments'
+  | 'timetable'
   | 'transcript'
   | 'calendar';
 
@@ -98,4 +101,18 @@ export interface DiscoveryDeepScrapeJob {
   connectedAccountId: string;
   userId: string;
   phase: DeepScrapePhase;
+}
+
+/** One-shot credential login — password never leaves Redis. */
+export interface BrowserCredentialLoginJob {
+  connectedAccountId: string;
+  onboardingSessionId: string;
+  userId: string;
+  /** Redis key holding encrypted { username, password }. */
+  credentialsRedisKey: string;
+}
+
+export interface BrowserCredentialLoginResult {
+  status: 'captured' | 'needs_interactive' | 'failed';
+  reason?: string;
 }

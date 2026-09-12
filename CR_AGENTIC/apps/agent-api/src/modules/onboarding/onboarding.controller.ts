@@ -1,5 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Public } from '../auth/public.decorator';
 import { OnboardingService } from './onboarding.service';
@@ -10,6 +17,7 @@ import { SyncService } from './sync.service';
 import {
   ApplyResultsRequestDto,
   ConfirmPortalRequestDto,
+  CredentialLoginRequestDto,
   LoginBridgeRequestDto,
   ManualPortalRequestDto,
   StartOnboardingRequestDto,
@@ -32,72 +40,139 @@ export class OnboardingController {
     return this.onboarding.start(userId, dto);
   }
 
+  /** School-first: start without a Course Rep account. */
+  @Public()
+  @Post('start-guest')
+  async startGuest(@Body() dto: StartOnboardingRequestDto) {
+    // Create session first with placeholder guest metadata, then bind token to session id.
+    const provisional = await this.onboarding.startGuest(dto, {
+      token: '',
+      tokenHash: 'pending',
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
+    const guest = this.login.issueGuestToken(provisional.onboardingSessionId);
+    await this.onboarding.attachGuestToken(provisional.onboardingSessionId, guest);
+    return {
+      onboardingSessionId: provisional.onboardingSessionId,
+      stage: provisional.stage,
+      guestToken: guest.token,
+      expiresAt: guest.expiresAt,
+    };
+  }
+
   @Get(':sessionId')
-  status(@CurrentUser('id') userId: string, @Param('sessionId') sessionId: string) {
-    return this.onboarding.getStatus(userId, sessionId);
+  async status(
+    @CurrentUser('id') userId: string | undefined,
+    @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
+  ) {
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.onboarding.getStatus(actor, sessionId);
   }
 
   @Post(':sessionId/cancel')
-  cancel(@CurrentUser('id') userId: string, @Param('sessionId') sessionId: string) {
-    return this.onboarding.cancel(userId, sessionId);
+  async cancel(
+    @CurrentUser('id') userId: string | undefined,
+    @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
+  ) {
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.onboarding.cancel(actor, sessionId);
   }
 
   @Post(':sessionId/discover-portal')
-  discoverPortal(
-    @CurrentUser('id') userId: string,
+  async discoverPortal(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.portal.discover(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.portal.discover(actor, sessionId);
   }
 
   @Get(':sessionId/portal-candidates')
-  portalCandidates(
-    @CurrentUser('id') userId: string,
+  async portalCandidates(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.portal.listCandidates(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.portal.listCandidates(actor, sessionId);
   }
 
   @Post(':sessionId/confirm-portal')
-  confirmPortal(
-    @CurrentUser('id') userId: string,
+  async confirmPortal(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
     @Body() dto: ConfirmPortalRequestDto,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.portal.confirm(userId, sessionId, dto);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.portal.confirm(actor, sessionId, dto);
   }
 
   @Post(':sessionId/confirm-portal-manual')
-  confirmPortalManual(
-    @CurrentUser('id') userId: string,
+  async confirmPortalManual(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
     @Body() dto: ManualPortalRequestDto,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.portal.confirmManual(userId, sessionId, dto);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.portal.confirmManual(actor, sessionId, dto);
   }
 
   @Post(':sessionId/login/start')
-  loginStart(
-    @CurrentUser('id') userId: string,
+  async loginStart(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.login.start(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.login.start(actor, sessionId);
+  }
+
+  @ApiHeader({ name: 'x-onboarding-guest-token', required: false })
+  @Post(':sessionId/login/credentials')
+  async loginCredentials(
+    @CurrentUser('id') userId: string | undefined,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: CredentialLoginRequestDto,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
+  ) {
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.login.credentialLogin(actor, sessionId, dto);
   }
 
   @Get(':sessionId/login/status')
-  loginStatus(
-    @CurrentUser('id') userId: string,
+  async loginStatus(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.login.status(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.login.status(actor, sessionId);
   }
 
   @Post(':sessionId/login/complete')
-  loginComplete(
-    @CurrentUser('id') userId: string,
+  async loginComplete(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.login.complete(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.login.complete(actor, sessionId);
+  }
+
+  /** After portal session + profile scrape: create/link Course Rep user and issue JWT. */
+  @Post(':sessionId/claim-identity')
+  async claimIdentity(
+    @CurrentUser('id') userId: string | undefined,
+    @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
+  ) {
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.login.claimIdentity(actor, sessionId);
   }
 
   // Public: authenticated by the one-time HMAC bridge token, not JWT.
@@ -108,35 +183,43 @@ export class OnboardingController {
   }
 
   @Post(':sessionId/discover-academics')
-  discoverAcademics(
-    @CurrentUser('id') userId: string,
+  async discoverAcademics(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.deepDiscovery.start(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.deepDiscovery.start(actor, sessionId);
   }
 
   @Get(':sessionId/discovery-results')
-  discoveryResults(
-    @CurrentUser('id') userId: string,
+  async discoveryResults(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.deepDiscovery.results(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.deepDiscovery.results(actor, sessionId);
   }
 
   @Post(':sessionId/apply-results')
-  applyResults(
-    @CurrentUser('id') userId: string,
+  async applyResults(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
     @Body() dto: ApplyResultsRequestDto,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.deepDiscovery.applyResults(userId, sessionId, dto);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.deepDiscovery.applyResults(actor, sessionId, dto);
   }
 
   @Post(':sessionId/sync-to-course-rep')
-  syncToCourseRep(
-    @CurrentUser('id') userId: string,
+  async syncToCourseRep(
+    @CurrentUser('id') userId: string | undefined,
     @Param('sessionId') sessionId: string,
+    @Headers('x-onboarding-guest-token') guestToken?: string,
   ) {
-    return this.sync.syncToCourseRep(userId, sessionId);
+    const actor = await this.login.resolveActor(sessionId, userId, guestToken);
+    return this.sync.syncToCourseRep(actor, sessionId);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, ExecutionContext } from '@nestjs/common';
+import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from './public.decorator';
@@ -15,6 +15,23 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       context.getClass(),
     ]);
     if (isPublic) return true;
+
+    const request = context.switchToHttp().getRequest();
+    const guestToken =
+      request.headers?.['x-onboarding-guest-token'] ||
+      request.headers?.['X-Onboarding-Guest-Token'];
+    if (typeof guestToken === 'string' && guestToken.length > 0) {
+      // Bypass passport; handler verifies the guest token against the session.
+      return true;
+    }
+
     return super.canActivate(context);
+  }
+
+  handleRequest<TUser>(err: Error | null, user: TUser): TUser {
+    if (err || !user) {
+      throw err || new UnauthorizedException();
+    }
+    return user;
   }
 }

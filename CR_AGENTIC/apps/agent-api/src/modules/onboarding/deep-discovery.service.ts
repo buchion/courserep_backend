@@ -43,7 +43,7 @@ export class DeepDiscoveryService {
       data: { discoveryStatus: 'IN_PROGRESS' },
     });
 
-    // The worker chains courses -> transcript -> calendar.
+    // The worker chains profile -> courses -> assignments -> timetable.
     await enqueueJob<DiscoveryDeepScrapeJob>(
       QUEUE_NAMES.DISCOVERY_DEEP_SCRAPE,
       this.redis,
@@ -52,7 +52,7 @@ export class DeepDiscoveryService {
         onboardingSessionId: sessionId,
         connectedAccountId: account.id,
         userId,
-        phase: 'courses',
+        phase: 'profile',
       },
     );
 
@@ -61,21 +61,40 @@ export class DeepDiscoveryService {
 
   async results(userId: string, sessionId: string) {
     await this.onboarding.requireSession(userId, sessionId);
-    const [courses, academicRecords, calendarEvents] = await Promise.all([
-      prisma.discoveredCourse.findMany({
-        where: { onboardingSessionId: sessionId },
-        orderBy: { code: 'asc' },
-      }),
-      prisma.discoveredAcademicRecord.findMany({
-        where: { onboardingSessionId: sessionId },
-      }),
-      prisma.discoveredCalendarEvent.findMany({
-        where: { onboardingSessionId: sessionId },
-        orderBy: { startsAt: 'asc' },
-      }),
-    ]);
+    const [courses, assignments, timetableSlots, academicRecords, calendarEvents, portalProfile] =
+      await Promise.all([
+        prisma.discoveredCourse.findMany({
+          where: { onboardingSessionId: sessionId },
+          orderBy: { code: 'asc' },
+        }),
+        prisma.discoveredAssignment.findMany({
+          where: { onboardingSessionId: sessionId },
+          orderBy: { dueAt: 'asc' },
+        }),
+        prisma.discoveredTimetableSlot.findMany({
+          where: { onboardingSessionId: sessionId },
+          orderBy: { dayOfWeek: 'asc' },
+        }),
+        prisma.discoveredAcademicRecord.findMany({
+          where: { onboardingSessionId: sessionId },
+        }),
+        prisma.discoveredCalendarEvent.findMany({
+          where: { onboardingSessionId: sessionId },
+          orderBy: { startsAt: 'asc' },
+        }),
+        prisma.discoveredPortalProfile.findUnique({
+          where: { onboardingSessionId: sessionId },
+        }),
+      ]);
 
-    return { courses, academicRecords, calendarEvents };
+    return {
+      courses,
+      assignments,
+      timetableSlots,
+      academicRecords,
+      calendarEvents,
+      portalProfile,
+    };
   }
 
   /** Records the user's import selections and completes onboarding. */
@@ -89,6 +108,28 @@ export class DeepDiscoveryService {
       });
       await prisma.discoveredCourse.updateMany({
         where: { onboardingSessionId: sessionId, id: { in: dto.courseIds } },
+        data: { selected: true },
+      });
+    }
+
+    if (dto.assignmentIds) {
+      await prisma.discoveredAssignment.updateMany({
+        where: { onboardingSessionId: sessionId },
+        data: { selected: false },
+      });
+      await prisma.discoveredAssignment.updateMany({
+        where: { onboardingSessionId: sessionId, id: { in: dto.assignmentIds } },
+        data: { selected: true },
+      });
+    }
+
+    if (dto.timetableSlotIds) {
+      await prisma.discoveredTimetableSlot.updateMany({
+        where: { onboardingSessionId: sessionId },
+        data: { selected: false },
+      });
+      await prisma.discoveredTimetableSlot.updateMany({
+        where: { onboardingSessionId: sessionId, id: { in: dto.timetableSlotIds } },
         data: { selected: true },
       });
     }
@@ -120,6 +161,8 @@ export class DeepDiscoveryService {
       resourceId: sessionId,
       metadata: {
         courses: dto.courseIds?.length ?? 0,
+        assignments: dto.assignmentIds?.length ?? 0,
+        timetableSlots: dto.timetableSlotIds?.length ?? 0,
         calendarEvents: dto.calendarEventIds?.length ?? 0,
       },
     });

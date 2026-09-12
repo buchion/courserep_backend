@@ -5,17 +5,29 @@ import { createLogger, writeAuditLog } from '@cr-agentic/observability';
 import { enqueueJob } from '@cr-agentic/queue';
 import { QUEUE_NAMES } from '@cr-agentic/shared';
 import type { DeepScrapePhase, DiscoveryDeepScrapeJob } from '@cr-agentic/shared';
-import { LmsAdapterRegistry, GenericPortalAdapter, CanvasAdapter } from '@cr-agentic/lms-adapters';
+import {
+  LmsAdapterRegistry,
+  GenericPortalAdapter,
+  CanvasAdapter,
+  MoodleAdapter,
+} from '@cr-agentic/lms-adapters';
+import type { GenericPortalConfig } from '@cr-agentic/lms-adapters';
 import { LmsType } from '@cr-agentic/shared';
 import type { LlmCompletionClient } from '@cr-agentic/portal-discovery';
 import { DiscoveryBrowser } from '../browser/discovery-browser';
 
 const logger = createLogger('deep-scrape-processor');
 
-const PHASE_ORDER: DeepScrapePhase[] = ['courses', 'transcript', 'calendar'];
+const PHASE_ORDER: DeepScrapePhase[] = [
+  'profile',
+  'courses',
+  'assignments',
+  'timetable',
+];
 
-const TRANSCRIPT_PATHS = ['/transcript', '/results', '/grades', '/academic-record'];
-const CALENDAR_PATHS = ['/calendar', '/academic-calendar', '/timetable', '/events'];
+const ASSIGNMENT_PATHS = ['/assignments', '/assignment', '/homework', '/coursework', '/calendar'];
+const TIMETABLE_PATHS = ['/timetable', '/schedule', '/calendar', '/academic-calendar', '/events'];
+const PROFILE_PATHS = ['/profile', '/user/profile', '/my/profile', '/account'];
 
 export class DeepScrapeProcessor {
   private readonly registry = new LmsAdapterRegistry();
@@ -27,6 +39,7 @@ export class DeepScrapeProcessor {
   ) {
     this.registry.register(new GenericPortalAdapter());
     this.registry.register(new CanvasAdapter());
+    this.registry.register(new MoodleAdapter());
   }
 
   async process(job: { data: DiscoveryDeepScrapeJob }): Promise<void> {
@@ -46,6 +59,7 @@ export class DeepScrapeProcessor {
       throw new Error('No active browser session for deep scrape');
     }
 
+    const config = await this.loadAdapterConfig(account.universityId, account.lmsType);
     const context = await this.browser.contextFromSession(
       account.browserSessions[0].storageStateS3Key,
     );
@@ -53,14 +67,21 @@ export class DeepScrapeProcessor {
 
     try {
       switch (phase) {
+        case 'profile':
+          await this.scrapeProfile(page, account, onboardingSessionId, userId, config);
+          break;
         case 'courses':
-          await this.scrapeCourses(page, account, onboardingSessionId, userId);
+          await this.scrapeCourses(page, account, onboardingSessionId, userId, config);
+          break;
+        case 'assignments':
+          await this.scrapeAssignments(page, account, onboardingSessionId, userId, config);
+          break;
+        case 'timetable':
+          await this.scrapeTimetable(page, account, onboardingSessionId, userId, config);
           break;
         case 'transcript':
-          await this.scrapeTranscript(page, account.lmsBaseUrl, onboardingSessionId, userId);
-          break;
         case 'calendar':
-          await this.scrapeCalendar(page, account.lmsBaseUrl, onboardingSessionId, userId);
+          // Legacy phases no longer in the default chain; keep no-ops for old jobs.
           break;
       }
 
@@ -79,8 +100,22 @@ export class DeepScrapeProcessor {
 
   private async enqueueNextPhase(data: DiscoveryDeepScrapeJob): Promise<void> {
     const idx = PHASE_ORDER.indexOf(data.phase);
-    const next = PHASE_ORDER[idx + 1];
+    const next = idx >= 0 ? PHASE_ORDER[idx + 1] : undefined;
     if (!next) {
+      const session = await prisma.onboardingSession.findUnique({
+        where: { id: data.onboardingSessionId },
+      });
+      if (session && session.stage !== OnboardingStage.DEEP_DISCOVERY) {
+        await recordOnboardingTransition(
+          data.onboardingSessionId,
+          session.stage,
+          OnboardingStage.DEEP_DISCOVERY,
+        ).catch(() => undefined);
+      }
+      await prisma.connectedAccount.update({
+        where: { id: data.connectedAccountId },
+        data: { discoveryStatus: 'COMPLETE' },
+      }).catch(() => undefined);
       logger.info({ onboardingSessionId: data.onboardingSessionId }, 'Deep scrape complete');
       return;
     }
@@ -92,15 +127,90 @@ export class DeepScrapeProcessor {
     );
   }
 
+  private async scrapeProfile(
+    page: Page,
+    account: { lmsType: string; lmsBaseUrl: string },
+    onboardingSessionId: string,
+    userId: string,
+    config?: GenericPortalConfig,
+  ): Promise<void> {
+    await page.goto(account.lmsBaseUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    const adapter = this.safeAdapter(account.lmsType);
+    let profile = adapter.extractProfile
+      ? await adapter.extractProfile(page, config).catch(() => null)
+      : null;
+
+    if (!profile) {
+      const text = await this.collectText(page, account.lmsBaseUrl, PROFILE_PATHS);
+      if (text) {
+        const extracted = await this.extractJson(
+          'Extract the student profile. Return STRICT JSON: ' +
+            '{"displayName": string|null, "email": string|null, "studentId": string|null, ' +
+            '"departmentName": string|null, "academicLevelName": string|null}.',
+          text,
+        );
+        profile = {
+          displayName: typeof extracted.displayName === 'string' ? extracted.displayName : undefined,
+          email: typeof extracted.email === 'string' ? extracted.email : undefined,
+          studentId: typeof extracted.studentId === 'string' ? extracted.studentId : undefined,
+          departmentName:
+            typeof extracted.departmentName === 'string' ? extracted.departmentName : undefined,
+          academicLevelName:
+            typeof extracted.academicLevelName === 'string'
+              ? extracted.academicLevelName
+              : undefined,
+        };
+      }
+    }
+
+    if (!profile) return;
+
+    await prisma.discoveredPortalProfile.upsert({
+      where: { onboardingSessionId },
+      create: {
+        onboardingSessionId,
+        userId,
+        displayName: profile.displayName,
+        email: profile.email,
+        studentId: profile.studentId,
+        departmentName: profile.departmentName,
+        academicLevelName: profile.academicLevelName,
+        rawJson: profile as object,
+      },
+      update: {
+        displayName: profile.displayName,
+        email: profile.email,
+        studentId: profile.studentId,
+        departmentName: profile.departmentName,
+        academicLevelName: profile.academicLevelName,
+        rawJson: profile as object,
+      },
+    });
+
+    // Mirror profile hints onto the onboarding session for later identity upsert.
+    await prisma.onboardingSession.update({
+      where: { id: onboardingSessionId },
+      data: {
+        ...(profile.departmentName ? { departmentName: profile.departmentName } : {}),
+        ...(profile.academicLevelName
+          ? { academicLevelName: profile.academicLevelName }
+          : {}),
+      },
+    });
+
+    logger.info({ onboardingSessionId }, 'Scraped portal profile');
+  }
+
   private async scrapeCourses(
     page: Page,
     account: { lmsType: string; lmsBaseUrl: string; universityId: string | null },
     onboardingSessionId: string,
     userId: string,
+    config?: GenericPortalConfig,
   ): Promise<void> {
     await page.goto(account.lmsBaseUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    const adapter = this.registry.get(account.lmsType as LmsType);
-    const courses = await adapter.listCourses(page).catch(() => []);
+    const adapter = this.safeAdapter(account.lmsType);
+    const courses = await adapter.listCourses(page, config).catch(() => []);
 
     for (const course of courses) {
       await prisma.discoveredCourse.create({
@@ -108,6 +218,7 @@ export class DeepScrapeProcessor {
           onboardingSessionId,
           userId,
           externalId: course.externalId,
+          code: course.code,
           title: course.title,
         },
       });
@@ -115,80 +226,150 @@ export class DeepScrapeProcessor {
     logger.info({ onboardingSessionId, count: courses.length }, 'Scraped courses');
   }
 
-  private async scrapeTranscript(
+  private async scrapeAssignments(
     page: Page,
-    baseUrl: string,
+    account: { lmsType: string; lmsBaseUrl: string },
     onboardingSessionId: string,
     userId: string,
+    config?: GenericPortalConfig,
   ): Promise<void> {
-    const text = await this.collectText(page, baseUrl, TRANSCRIPT_PATHS);
-    if (!text) return;
+    await page.goto(account.lmsBaseUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    const adapter = this.safeAdapter(account.lmsType);
+    let assignments =
+      (adapter.listAssignments
+        ? await adapter.listAssignments(page, config).catch(() => [])
+        : []) ?? [];
 
-    const extracted = await this.extractJson(
-      'Extract the student academic record from the page text. Return STRICT JSON: ' +
-        '{"cumulativeGpa": number|null, "gradingScale": object|null, "courseGrades": [{"course": string, "grade": string}]}.',
-      text,
-    );
+    if (assignments.length === 0) {
+      const text = await this.collectText(page, account.lmsBaseUrl, ASSIGNMENT_PATHS);
+      if (text) {
+        const extracted = await this.extractJson(
+          'Extract assignments and deadlines from the page text. Return STRICT JSON: ' +
+            '{"assignments": [{"title": string, "dueAt": ISO8601|null, "courseTitle": string|null, ' +
+            '"eventType": "assignment"|"exam"|"test"|"quiz"|null}]}.',
+          text,
+        );
+        const list = Array.isArray(extracted.assignments) ? extracted.assignments : [];
+        assignments = list
+          .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+          .filter((a) => typeof a.title === 'string')
+          .map((a, i) => ({
+            externalId: `llm-a-${i}`,
+            title: a.title as string,
+            courseTitle: typeof a.courseTitle === 'string' ? a.courseTitle : undefined,
+            dueAt: typeof a.dueAt === 'string' ? a.dueAt : undefined,
+            eventType:
+              typeof a.eventType === 'string'
+                ? (a.eventType as 'assignment' | 'exam' | 'test' | 'quiz')
+                : 'assignment',
+          }));
+      }
+    }
 
-    await prisma.discoveredAcademicRecord.create({
-      data: {
-        onboardingSessionId,
-        userId,
-        cumulativeGpa:
-          typeof extracted.cumulativeGpa === 'number' ? extracted.cumulativeGpa : null,
-        gradingScale: (extracted.gradingScale as object) ?? undefined,
-        courseGrades: (extracted.courseGrades as object) ?? undefined,
+    for (const a of assignments) {
+      await prisma.discoveredAssignment.create({
+        data: {
+          onboardingSessionId,
+          userId,
+          externalId: a.externalId,
+          title: a.title,
+          courseExternalId: a.courseExternalId,
+          courseTitle: a.courseTitle,
+          dueAt: this.parseDate(a.dueAt),
+          url: a.url,
+          eventType: a.eventType,
+        },
+      });
+    }
+    logger.info({ onboardingSessionId, count: assignments.length }, 'Scraped assignments');
+  }
+
+  private async scrapeTimetable(
+    page: Page,
+    account: { lmsType: string; lmsBaseUrl: string },
+    onboardingSessionId: string,
+    userId: string,
+    config?: GenericPortalConfig,
+  ): Promise<void> {
+    await page.goto(account.lmsBaseUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    const adapter = this.safeAdapter(account.lmsType);
+    let slots =
+      (adapter.listTimetable
+        ? await adapter.listTimetable(page, config).catch(() => [])
+        : []) ?? [];
+
+    if (slots.length === 0) {
+      const text = await this.collectText(page, account.lmsBaseUrl, TIMETABLE_PATHS);
+      if (text) {
+        const extracted = await this.extractJson(
+          'Extract class timetable / schedule slots. Return STRICT JSON: ' +
+            '{"slots": [{"title": string, "dayOfWeek": 1-7|null, "startsAt": ISO8601|null, ' +
+            '"endsAt": ISO8601|null, "location": string|null, "courseTitle": string|null}]}.',
+          text,
+        );
+        const list = Array.isArray(extracted.slots) ? extracted.slots : [];
+        slots = list
+          .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+          .filter((s) => typeof s.title === 'string')
+          .map((s, i) => ({
+            externalId: `llm-slot-${i}`,
+            title: s.title as string,
+            dayOfWeek: typeof s.dayOfWeek === 'number' ? s.dayOfWeek : undefined,
+            startsAt: typeof s.startsAt === 'string' ? s.startsAt : undefined,
+            endsAt: typeof s.endsAt === 'string' ? s.endsAt : undefined,
+            location: typeof s.location === 'string' ? s.location : undefined,
+            courseTitle: typeof s.courseTitle === 'string' ? s.courseTitle : undefined,
+          }));
+      }
+    }
+
+    for (const slot of slots) {
+      await prisma.discoveredTimetableSlot.create({
+        data: {
+          onboardingSessionId,
+          userId,
+          externalId: slot.externalId,
+          title: slot.title,
+          courseExternalId: slot.courseExternalId,
+          courseTitle: slot.courseTitle,
+          dayOfWeek: slot.dayOfWeek,
+          startsAt: this.parseDate(slot.startsAt),
+          endsAt: this.parseDate(slot.endsAt),
+          location: slot.location,
+        },
+      });
+    }
+    logger.info({ onboardingSessionId, count: slots.length }, 'Scraped timetable');
+  }
+
+  private safeAdapter(lmsType: string) {
+    try {
+      return this.registry.get(lmsType as LmsType);
+    } catch {
+      return this.registry.get(LmsType.GENERIC);
+    }
+  }
+
+  private async loadAdapterConfig(
+    universityId: string | null,
+    lmsType: string,
+  ): Promise<GenericPortalConfig | undefined> {
+    if (!universityId) return undefined;
+    const row = await prisma.portalAdapterConfig.findUnique({
+      where: {
+        universityId_lmsType: {
+          universityId,
+          lmsType: lmsType as never,
+        },
       },
     });
-    logger.info({ onboardingSessionId }, 'Scraped transcript');
+    if (!row) return undefined;
+    return {
+      selectors: (row.selectors as GenericPortalConfig['selectors']) ?? undefined,
+      paths: (row.paths as GenericPortalConfig['paths']) ?? undefined,
+    };
   }
 
-  private async scrapeCalendar(
-    page: Page,
-    baseUrl: string,
-    onboardingSessionId: string,
-    userId: string,
-  ): Promise<void> {
-    const text = await this.collectText(page, baseUrl, CALENDAR_PATHS);
-    if (text) {
-      const extracted = await this.extractJson(
-        'Extract academic calendar events from the page text. Return STRICT JSON: ' +
-          '{"events": [{"title": string, "eventType": string|null, "startsAt": ISO8601|null, "endsAt": ISO8601|null}]}.',
-        text,
-      );
-      const events = Array.isArray(extracted.events) ? extracted.events : [];
-      for (const ev of events) {
-        if (!ev || typeof ev !== 'object') continue;
-        const e = ev as Record<string, unknown>;
-        if (typeof e.title !== 'string') continue;
-        await prisma.discoveredCalendarEvent.create({
-          data: {
-            onboardingSessionId,
-            userId,
-            title: e.title,
-            eventType: typeof e.eventType === 'string' ? e.eventType : undefined,
-            startsAt: this.parseDate(e.startsAt),
-            endsAt: this.parseDate(e.endsAt),
-          },
-        });
-      }
-      logger.info({ onboardingSessionId, count: events.length }, 'Scraped calendar');
-    }
-
-    // Calendar is the final phase: mark onboarding ready for review.
-    const session = await prisma.onboardingSession.findUnique({
-      where: { id: onboardingSessionId },
-    });
-    if (session && session.stage !== OnboardingStage.DEEP_DISCOVERY) {
-      await recordOnboardingTransition(
-        onboardingSessionId,
-        session.stage,
-        OnboardingStage.DEEP_DISCOVERY,
-      ).catch(() => undefined);
-    }
-  }
-
-  /** Navigates candidate paths and returns the first page's trimmed body text. */
   private async collectText(
     page: Page,
     baseUrl: string,

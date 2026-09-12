@@ -15,7 +15,7 @@ async function bootstrap() {
     origin: corsOrigin && corsOrigin.length > 0 ? corsOrigin : true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Onboarding-Guest-Token'],
   });
 
   app.useGlobalPipes(

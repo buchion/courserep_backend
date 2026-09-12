@@ -3,6 +3,7 @@ import { createRedisConnection, createWorker } from '@cr-agentic/queue';
 import {
   QUEUE_NAMES,
   type BrowserConnectLmsJob,
+  type BrowserCredentialLoginJob,
   type BrowserRefreshSessionJob,
   type BrowserValidateSessionJob,
   type LmsCheckJob,
@@ -39,6 +40,14 @@ async function main() {
         await processors.processValidateSession(job);
       } catch (err) {
         await processors.handleFailure(QUEUE_NAMES.BROWSER_VALIDATE_SESSION, job, err);
+        throw err;
+      }
+    }),
+    createWorker<BrowserCredentialLoginJob>(QUEUE_NAMES.BROWSER_CREDENTIAL_LOGIN, async (job) => {
+      try {
+        await processors.processCredentialLogin(job);
+      } catch (err) {
+        await processors.handleFailure(QUEUE_NAMES.BROWSER_CREDENTIAL_LOGIN, job, err);
         throw err;
       }
     }),

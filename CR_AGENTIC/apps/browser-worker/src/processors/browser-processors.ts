@@ -11,12 +11,14 @@ import type {
   LmsDownloadJob,
 } from '@cr-agentic/shared';
 import { LmsAdapterRegistry } from '@cr-agentic/lms-adapters';
-import { GenericPortalAdapter, CanvasAdapter } from '@cr-agentic/lms-adapters';
+import { GenericPortalAdapter, CanvasAdapter, MoodleAdapter } from '@cr-agentic/lms-adapters';
 import type { GenericPortalConfig } from '@cr-agentic/lms-adapters';
 import { LmsType } from '@cr-agentic/shared';
 import { createBrowserStack } from '../browser/browser-controller';
 import Redis from 'ioredis';
 import { createHash } from 'crypto';
+import { SessionCrypto } from '@cr-agentic/storage';
+import type { BrowserCredentialLoginJob } from '@cr-agentic/shared';
 
 const logger = createLogger('browser-processors');
 
@@ -29,11 +31,16 @@ export class BrowserProcessors {
   ) {
     this.registry.register(new GenericPortalAdapter());
     this.registry.register(new CanvasAdapter());
+    this.registry.register(new MoodleAdapter());
     void this.stack.controller.launch();
   }
 
   private adapter(lmsType: string) {
-    return this.registry.get(lmsType as LmsType);
+    try {
+      return this.registry.get(lmsType as LmsType);
+    } catch {
+      return this.registry.get(LmsType.GENERIC);
+    }
   }
 
   async processConnect(job: Job<BrowserConnectLmsJob>) {
@@ -134,6 +141,127 @@ export class BrowserProcessors {
 
   async processRefresh(job: Job<BrowserRefreshSessionJob>) {
     return this.processConnect(job as unknown as Job<BrowserConnectLmsJob>);
+  }
+
+  /**
+   * Server-side username/password login. Credentials are read once from Redis
+   * (encrypted), used to fill the portal form, then deleted. On MFA/SSO/captcha
+   * the onboarding session flips to REAUTH_REQUIRED for interactive fallback.
+   */
+  async processCredentialLogin(job: Job<BrowserCredentialLoginJob>) {
+    const lock = new UserLock(this.redis);
+    return lock.withLock(job.data.userId, async () => {
+      const { controller, env } = this.stack;
+      const account = await prisma.connectedAccount.findUnique({
+        where: { id: job.data.connectedAccountId },
+      });
+      if (!account) throw new Error('Connected account missing');
+
+      const encryptedB64 = await this.redis.get(job.data.credentialsRedisKey);
+      // Always delete — even on failure — so passwords never linger.
+      await this.redis.del(job.data.credentialsRedisKey).catch(() => undefined);
+
+      if (!encryptedB64) {
+        await recordOnboardingTransition(
+          job.data.onboardingSessionId,
+          OnboardingStage.LOGIN_IN_PROGRESS,
+          OnboardingStage.FAILED,
+          { reason: 'credentials_expired' },
+        );
+        throw new Error('Credentials expired or missing');
+      }
+
+      const crypto = new SessionCrypto(env.SESSION_ENCRYPTION_KEY);
+      let credentials: { username: string; password: string };
+      try {
+        credentials = crypto.decryptJson(Buffer.from(encryptedB64, 'base64'));
+      } catch {
+        await recordOnboardingTransition(
+          job.data.onboardingSessionId,
+          OnboardingStage.LOGIN_IN_PROGRESS,
+          OnboardingStage.FAILED,
+          { reason: 'credentials_decrypt_failed' },
+        );
+        throw new Error('Failed to decrypt credentials');
+      }
+
+      const config = await this.loadAdapterConfig(account.universityId, account.lmsType);
+      const adapter = this.adapter(account.lmsType);
+      const context = await controller.createContext();
+      const page = await context.newPage();
+
+      try {
+        await page.goto(adapter.loginUrl(account.lmsBaseUrl), {
+          waitUntil: 'domcontentloaded',
+          timeout: 60_000,
+        });
+
+        const attempt = adapter.attemptCredentialLogin
+          ? await adapter.attemptCredentialLogin(page, credentials, config)
+          : false;
+
+        // Zero out local copy
+        credentials.password = '';
+        credentials.username = '';
+
+        if (!attempt) {
+          await prisma.connectedAccount.update({
+            where: { id: account.id },
+            data: { status: 'REAUTH_REQUIRED' },
+          });
+          await recordOnboardingTransition(
+            job.data.onboardingSessionId,
+            OnboardingStage.LOGIN_IN_PROGRESS,
+            OnboardingStage.REAUTH_REQUIRED,
+            { reason: 'needs_interactive_login' },
+          );
+          metrics.increment('browser.credential_login.needs_interactive');
+          return;
+        }
+
+        const { s3Key, expiresAt } = await controller.persistSession(account.id, context);
+        await prisma.browserSession.create({
+          data: {
+            connectedAccountId: account.id,
+            storageStateS3Key: s3Key,
+            expiresAt,
+            lastValidatedAt: new Date(),
+            status: 'ACTIVE',
+          },
+        });
+        await prisma.connectedAccount.update({
+          where: { id: account.id },
+          data: { status: 'ACTIVE' },
+        });
+        await recordOnboardingTransition(
+          job.data.onboardingSessionId,
+          OnboardingStage.LOGIN_IN_PROGRESS,
+          OnboardingStage.SESSION_CAPTURED,
+        );
+
+        metrics.increment('browser.credential_login.success');
+        await writeAuditLog({
+          actorId: job.data.userId,
+          action: 'credential_login_captured',
+          resourceType: 'connected_account',
+          resourceId: account.id,
+        });
+      } catch (err) {
+        await recordOnboardingTransition(
+          job.data.onboardingSessionId,
+          OnboardingStage.LOGIN_IN_PROGRESS,
+          OnboardingStage.REAUTH_REQUIRED,
+          {
+            reason: 'credential_login_error',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        ).catch(() => undefined);
+        metrics.increment('browser.credential_login.failure');
+        throw err;
+      } finally {
+        await controller.releaseContext(context);
+      }
+    });
   }
 
   /**

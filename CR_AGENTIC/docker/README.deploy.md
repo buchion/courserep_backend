@@ -115,11 +115,26 @@ The browser web client calls this API cross-origin. Set `CORS_ORIGIN` in
 `agent-api`:
 
 ```bash
-CORS_ORIGIN=https://agent.courserep.org,http://localhost:5173
+CORS_ORIGIN=https://app.courserep.ng,https://app.courserep.org,https://course-rep-agent-web.pages.dev,https://agent.courserep.org,http://localhost:5173
 ```
 
 After redeploying, an `OPTIONS` preflight to `/api/v1/agent/...` should return
 `204` with `Access-Control-Allow-Origin` matching the request origin.
+
+### JWT (required — fixes 401 Unauthorized)
+
+Tokens are issued by the **main** Course Rep API. The agent API validates them
+with `JWT_SECRET`, `JWT_ISSUER`, and `JWT_AUDIENCE`. These three values must be
+**identical** on both servers or every authenticated agent request returns 401.
+
+On production, copy the JWT block from the main API `.env` on `api.courserep.ng`
+into `CR_AGENTIC/.env`, then restart `agent-api`:
+
+```bash
+JWT_SECRET=<same-as-main-api>
+JWT_ISSUER=COURSE_REP
+JWT_AUDIENCE=mMY_AUDIOENCE_HERE
+```
 
 ## 8. Connect the main Course Rep app
 

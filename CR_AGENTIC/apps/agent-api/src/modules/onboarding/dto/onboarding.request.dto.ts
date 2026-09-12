@@ -90,12 +90,34 @@ export class LoginBridgeRequestDto {
   storageState!: StorageStateDto;
 }
 
+export class CredentialLoginRequestDto {
+  @ApiProperty({ description: 'School portal username or email' })
+  @IsString()
+  username!: string;
+
+  @ApiProperty({ description: 'School portal password (one-shot; never persisted)' })
+  @IsString()
+  password!: string;
+}
+
 export class ApplyResultsRequestDto {
   @ApiPropertyOptional({ type: [String], description: 'DiscoveredCourse ids to import' })
   @IsOptional()
   @IsArray()
   @IsUUID('all', { each: true })
   courseIds?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'DiscoveredAssignment ids to import' })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  assignmentIds?: string[];
+
+  @ApiPropertyOptional({ type: [String], description: 'DiscoveredTimetableSlot ids to import' })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  timetableSlotIds?: string[];
 
   @ApiPropertyOptional({ type: [String], description: 'DiscoveredCalendarEvent ids to import' })
   @IsOptional()

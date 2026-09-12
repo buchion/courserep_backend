@@ -33,6 +33,15 @@ export const QUEUE_POLICIES: Record<string, QueuePolicy> = {
       removeOnFail: false,
     },
   },
+  [QUEUE_NAMES.BROWSER_CREDENTIAL_LOGIN]: {
+    concurrency: 5,
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: 'fixed', delay: 10_000 },
+      removeOnComplete: 1000,
+      removeOnFail: false,
+    },
+  },
   [QUEUE_NAMES.LMS_CHECK]: {
     concurrency: 20,
     defaultJobOptions: {

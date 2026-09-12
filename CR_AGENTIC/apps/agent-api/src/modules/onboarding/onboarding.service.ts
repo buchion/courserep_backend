@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { prisma, OnboardingStage, Prisma } from '@cr-agentic/database';
 import { writeAuditLog } from '@cr-agentic/observability';
 import { assertTransition, isTerminal } from './onboarding-state-machine';
@@ -41,6 +42,77 @@ export class OnboardingService {
     });
 
     return { onboardingSessionId: session.id, stage: session.stage };
+  }
+
+  /**
+   * School-first entry: create an onboarding session without a Course Rep
+   * account. Uses a provisional UUID as userId until claim-identity remaps it.
+   */
+  async startGuest(
+    dto: StartOnboardingRequestDto,
+    guest: { token: string; tokenHash: string; expiresAt: Date },
+  ) {
+    const provisionalUserId = randomUUID();
+
+    const session = await prisma.onboardingSession.create({
+      data: {
+        userId: provisionalUserId,
+        universityId: dto.universityId,
+        universityName: dto.universityName,
+        country: dto.country,
+        website: dto.website,
+        departmentName: dto.departmentName,
+        academicLevelName: dto.academicLevelName,
+        stage: 'UNIVERSITY_SELECTED',
+        expiresAt: new Date(Date.now() + ONBOARDING_TTL_MS),
+        metadata: {
+          isGuest: true,
+          guestTokenHash: guest.tokenHash,
+          guestTokenExpiresAt: guest.expiresAt.toISOString(),
+        },
+      },
+    });
+
+    // Patch guest token hash now that we know the session id — recreate bound to session.
+    // Caller should issue the token with the session id; we accept pre-created hash
+    // only when the start flow creates token after insert. See controller.
+    await this.recordAudit(session.id, null, 'UNIVERSITY_SELECTED', {
+      universityName: dto.universityName,
+      guest: true,
+    });
+
+    await writeAuditLog({
+      actorId: provisionalUserId,
+      action: 'onboarding_started_guest',
+      resourceType: 'onboarding_session',
+      resourceId: session.id,
+      metadata: { universityId: dto.universityId, universityName: dto.universityName },
+    });
+
+    return {
+      onboardingSessionId: session.id,
+      stage: session.stage,
+      provisionalUserId,
+    };
+  }
+
+  async attachGuestToken(
+    sessionId: string,
+    guest: { tokenHash: string; expiresAt: Date },
+  ) {
+    const session = await prisma.onboardingSession.findUnique({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Onboarding session not found');
+    await prisma.onboardingSession.update({
+      where: { id: sessionId },
+      data: {
+        metadata: {
+          ...((session.metadata as object) ?? {}),
+          isGuest: true,
+          guestTokenHash: guest.tokenHash,
+          guestTokenExpiresAt: guest.expiresAt.toISOString(),
+        },
+      },
+    });
   }
 
   async getStatus(userId: string, sessionId: string) {

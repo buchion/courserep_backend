@@ -6,8 +6,10 @@ import { LoginService } from './login.service';
 import { DeepDiscoveryService } from './deep-discovery.service';
 import { SyncService } from './sync.service';
 import { sessionStorageProvider } from './session-storage.provider';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
+  imports: [AuthModule],
   controllers: [OnboardingController],
   providers: [
     OnboardingService,

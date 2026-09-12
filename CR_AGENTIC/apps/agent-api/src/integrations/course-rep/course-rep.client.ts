@@ -100,6 +100,30 @@ export class CourseRepClient {
     );
   }
 
+  async upsertUserFromPortal(payload: {
+    email: string;
+    displayName?: string;
+    universityId?: string;
+    universityName?: string;
+    departmentName?: string;
+    academicLevelName?: string;
+    studentId?: string;
+  }): Promise<{
+    userId: string;
+    email: string;
+    username?: string;
+    universityId?: string;
+    departmentId?: string;
+    academicLevelId?: string;
+    refreshToken?: string;
+    created: boolean;
+  }> {
+    return this.request('/internal/users/upsert-from-portal', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   async updateUniversityPortal(payload: Record<string, unknown>): Promise<void> {
     await this.request<void>('/internal/universities/portal', {
       method: 'POST',

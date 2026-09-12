@@ -207,8 +207,13 @@ sessions expire after 24 hours.
 
 ## Security notes
 
-- Never send the school password to CR_AGENTIC. Only the post-login
-  `storageState` (cookies/tokens) is transmitted, over TLS, once.
+- Prefer `POST /onboarding/:sessionId/login/credentials` for web: the password
+  is encrypted into Redis for ≤5 minutes, used once by Playwright, then deleted.
+  Never write school passwords to Postgres, S3, or logs.
+- Interactive login-bridge remains for SSO/MFA/captcha. Never send the school
+  password to the bridge endpoint — only post-login `storageState`.
 - The bridge token is HMAC-signed and bound to the `sessionId`; treat it as a
   secret and do not log it.
 - Captured sessions are encrypted at rest (AES-256-GCM) in S3 by the server.
+- Guest onboarding uses `X-Onboarding-Guest-Token` until `claim-identity`
+  issues a Course Rep JWT.

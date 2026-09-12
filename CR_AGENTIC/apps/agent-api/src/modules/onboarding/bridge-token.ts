@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual, createHash } from 'crypto';
 
 export const BRIDGE_TOKEN_TTL_MS = 5 * 60 * 1000;
+export const GUEST_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Short-lived, single-use token the mobile WebView presents to the public
@@ -11,15 +12,51 @@ export function createBridgeToken(
   sessionId: string,
   secret: string,
 ): { token: string; tokenHash: string; expiresAt: Date } {
+  return createBoundToken(sessionId, secret, BRIDGE_TOKEN_TTL_MS);
+}
+
+export function verifyBridgeToken(
+  token: string,
+  sessionId: string,
+  secret: string,
+  storedHash: string | null,
+  expiresAt: Date | null,
+): boolean {
+  return verifyBoundToken(token, sessionId, secret, storedHash, expiresAt);
+}
+
+/** Longer-lived guest token for school-first onboarding before a Course Rep JWT exists. */
+export function createGuestToken(
+  sessionId: string,
+  secret: string,
+): { token: string; tokenHash: string; expiresAt: Date } {
+  return createBoundToken(sessionId, secret, GUEST_TOKEN_TTL_MS);
+}
+
+export function verifyGuestToken(
+  token: string,
+  sessionId: string,
+  secret: string,
+  storedHash: string | null,
+  expiresAt: Date | null,
+): boolean {
+  return verifyBoundToken(token, sessionId, secret, storedHash, expiresAt);
+}
+
+function createBoundToken(
+  sessionId: string,
+  secret: string,
+  ttlMs: number,
+): { token: string; tokenHash: string; expiresAt: Date } {
   const nonce = randomBytes(16).toString('hex');
-  const expiresAt = new Date(Date.now() + BRIDGE_TOKEN_TTL_MS);
+  const expiresAt = new Date(Date.now() + ttlMs);
   const payload = `${nonce}.${expiresAt.getTime()}`;
   const signature = sign(`${sessionId}.${payload}`, secret);
   const token = `${payload}.${signature}`;
   return { token, tokenHash: hashToken(token), expiresAt };
 }
 
-export function verifyBridgeToken(
+function verifyBoundToken(
   token: string,
   sessionId: string,
   secret: string,

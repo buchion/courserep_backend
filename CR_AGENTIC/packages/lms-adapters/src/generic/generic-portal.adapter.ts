@@ -3,24 +3,40 @@ import { LmsType } from '@cr-agentic/shared';
 import {
   GenericPortalConfig,
   ILmsAdapter,
+  LmsAssignment,
   LmsCourse,
   LmsMaterial,
+  LmsProfile,
+  LmsTimetableSlot,
 } from '../core/lms-adapter.interface';
 
 const DEFAULT_CONFIG: GenericPortalConfig = {
   selectors: {
-    authMarker: '[data-user-profile], .user-menu, #profile-dropdown',
+    authMarker: '[data-user-profile], .user-menu, #profile-dropdown, .usermenu, .avatar',
     courseList: '.course-list, [data-course-list], .courses',
-    courseLink: 'a.course-link, [data-course-link]',
+    courseLink: 'a.course-link, [data-course-link], a[href*="course"]',
     courseTitle: '.course-title, [data-course-title]',
     materialList: '.material-list, [data-materials], .files-list',
     materialLink: 'a.material-link, [data-file-link], a[href*="download"]',
     materialTitle: '.material-title, [data-file-name]',
     downloadLink: 'a[download], a[href*="download"]',
+    username: 'input[name="username"], input[name="email"], input[type="email"], #username, #email',
+    password: 'input[name="password"], input[type="password"], #password',
+    submit: 'button[type="submit"], input[type="submit"]',
+    assignmentList: '.assignment, .assignment-item, [data-assignment]',
+    assignmentLink: 'a[href*="assignment"], a[href*="homework"]',
+    assignmentTitle: '.assignment-title, .title',
+    assignmentDue: '.due-date, .deadline, time',
+    timetableRow: '.timetable-row, .schedule-row, tr[data-slot]',
+    profileMarker: '.profile, .user-profile, #profile',
   },
   paths: {
     courses: '/courses',
     dashboard: '/dashboard',
+    assignments: '/assignments',
+    timetable: '/timetable',
+    profile: '/profile',
+    login: '/login',
   },
 };
 
@@ -42,6 +58,50 @@ export class GenericPortalAdapter implements ILmsAdapter {
     } catch {
       return false;
     }
+  }
+
+  async attemptCredentialLogin(
+    page: Page,
+    credentials: { username: string; password: string },
+    config: GenericPortalConfig = DEFAULT_CONFIG,
+  ): Promise<boolean> {
+    const base = page.url();
+    const loginPath = config.paths?.login ?? DEFAULT_CONFIG.paths!.login!;
+    await page.goto(new URL(loginPath, base).toString(), {
+      waitUntil: 'domcontentloaded',
+      timeout: 60_000,
+    });
+
+    const userSel = config.selectors?.username ?? DEFAULT_CONFIG.selectors!.username!;
+    const passSel = config.selectors?.password ?? DEFAULT_CONFIG.selectors!.password!;
+    const submitSel = config.selectors?.submit ?? DEFAULT_CONFIG.selectors!.submit!;
+
+    const username = page.locator(userSel).first();
+    const password = page.locator(passSel).first();
+    const submit = page.locator(submitSel).first();
+
+    if ((await username.count()) === 0 || (await password.count()) === 0) {
+      return false;
+    }
+
+    await username.fill(credentials.username);
+    await password.fill(credentials.password);
+    if ((await submit.count()) > 0) {
+      await submit.click();
+    } else {
+      await password.press('Enter');
+    }
+    await page.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => undefined);
+
+    const url = page.url().toLowerCase();
+    if (
+      /mfa|sso|oauth|captcha|challenge|verify|2fa|otp/.test(url) ||
+      (await page.locator('iframe[src*="captcha"], .g-recaptcha, [data-sitekey]').count()) > 0
+    ) {
+      return false;
+    }
+
+    return this.validateSession(page, config);
   }
 
   async listCourses(
@@ -76,6 +136,88 @@ export class GenericPortalAdapter implements ILmsAdapter {
     }
 
     return courses;
+  }
+
+  async listAssignments(
+    page: Page,
+    config: GenericPortalConfig = DEFAULT_CONFIG,
+  ): Promise<LmsAssignment[]> {
+    const path = config.paths?.assignments ?? DEFAULT_CONFIG.paths!.assignments!;
+    const base = page.url();
+    await page.goto(new URL(path, base).toString(), {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    }).catch(() => undefined);
+
+    const linkSel = config.selectors?.assignmentLink ?? DEFAULT_CONFIG.selectors!.assignmentLink!;
+    const items = await page.locator(linkSel).all().catch(() => []);
+    const assignments: LmsAssignment[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const el = items[i];
+      const title = (await el.textContent())?.trim();
+      const href = await el.getAttribute('href');
+      if (!title) continue;
+      assignments.push({
+        externalId: href ?? `generic-a-${i}`,
+        title,
+        url: href ? (href.startsWith('http') ? href : new URL(href, base).toString()) : undefined,
+        eventType: /exam|test|quiz/i.test(title) ? 'exam' : 'assignment',
+      });
+    }
+    return assignments;
+  }
+
+  async listTimetable(
+    page: Page,
+    config: GenericPortalConfig = DEFAULT_CONFIG,
+  ): Promise<LmsTimetableSlot[]> {
+    const path = config.paths?.timetable ?? DEFAULT_CONFIG.paths!.timetable!;
+    const base = page.url();
+    await page.goto(new URL(path, base).toString(), {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    }).catch(async () => {
+      await page.goto(new URL('/calendar', base).toString(), {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000,
+      }).catch(() => undefined);
+    });
+
+    const rowSel = config.selectors?.timetableRow ?? DEFAULT_CONFIG.selectors!.timetableRow!;
+    const rows = await page.locator(rowSel).all().catch(() => []);
+    const slots: LmsTimetableSlot[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const text = (await rows[i].textContent())?.trim();
+      if (!text) continue;
+      slots.push({
+        externalId: `generic-slot-${i}`,
+        title: text.slice(0, 200),
+      });
+    }
+    return slots;
+  }
+
+  async extractProfile(
+    page: Page,
+    config: GenericPortalConfig = DEFAULT_CONFIG,
+  ): Promise<LmsProfile | null> {
+    const path = config.paths?.profile ?? DEFAULT_CONFIG.paths!.profile!;
+    const base = page.url();
+    await page.goto(new URL(path, base).toString(), {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    }).catch(() => undefined);
+
+    const email =
+      (await page.locator('a[href^="mailto:"]').first().textContent().catch(() => null))?.trim() ||
+      undefined;
+    const displayName =
+      (await page.locator('h1, h2, .profile-name, .user-name').first().textContent().catch(() => null))?.trim() ||
+      undefined;
+
+    if (!email && !displayName) return null;
+    return { displayName, email };
   }
 
   async listMaterials(
@@ -156,8 +298,10 @@ export class GenericPortalAdapter implements ILmsAdapter {
 export function createDefaultLmsRegistry(): import('../core/lms-adapter.registry').LmsAdapterRegistry {
   const { LmsAdapterRegistry } = require('../core/lms-adapter.registry');
   const { CanvasAdapter } = require('../canvas/canvas.adapter');
+  const { MoodleAdapter } = require('../moodle/moodle.adapter');
   const registry = new LmsAdapterRegistry();
   registry.register(new GenericPortalAdapter());
   registry.register(new CanvasAdapter());
+  registry.register(new MoodleAdapter());
   return registry;
 }
