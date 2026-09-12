@@ -191,7 +191,11 @@ export class BrowserProcessors {
       const page = await context.newPage();
 
       try {
-        await page.goto(adapter.loginUrl(account.lmsBaseUrl), {
+        const candidate = account.portalCandidateId
+          ? await prisma.portalCandidate.findUnique({ where: { id: account.portalCandidateId } })
+          : null;
+        const targetUrl = candidate?.loginUrl || adapter.loginUrl(account.lmsBaseUrl);
+        await page.goto(targetUrl, {
           waitUntil: 'domcontentloaded',
           timeout: 60_000,
         });
