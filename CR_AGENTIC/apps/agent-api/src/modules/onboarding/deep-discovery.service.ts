@@ -61,7 +61,6 @@ export class DeepDiscoveryService {
 
   async results(userId: string, sessionId: string) {
     await this.onboarding.requireSession(userId, sessionId);
-    const empty = [] as const;
     const safeMany = async <T>(fn: () => Promise<T[]>) => {
       try {
         return await fn();
