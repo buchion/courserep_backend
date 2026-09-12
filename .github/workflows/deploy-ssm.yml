@@ -1,17 +1,10 @@
-# CR_AGENTIC continuous deploy.
+# CR_AGENTIC continuous deploy via SSM on EC2.
 #
-# On push to the cr-agentic branch, assume an AWS role via GitHub OIDC and use
-# SSM Run Command to tell the EC2 box to pull the latest code and redeploy.
-# The heavy docker build runs ON the instance; the runner only orchestrates.
-#
-# This file is deployed to the branch root as .github/workflows/deploy-ssm.yml
-# (a copy is kept here under infra/ci for reference/editing).
-#
-# Prerequisites (one-time):
-#   1. Run CR_AGENTIC/infra/cloudshell/setup-gha-oidc.sh in CloudShell to create
-#      the OIDC provider + deploy role, and note the printed Role ARN.
-#   2. The EC2 box must be able to `git pull` on its own (read-only deploy key).
-#   3. Set the role ARN below (or as repo variable AWS_DEPLOY_ROLE_ARN).
+# Secrets (optional but recommended — match api.courserep.ng):
+#   CR_AGENT_JWT_SECRET
+#   CR_AGENT_JWT_ISSUER
+#   CR_AGENT_JWT_AUDIENCE
+#   CR_AGENT_CORS_ORIGIN
 
 name: Deploy CR_AGENTIC
 
@@ -37,6 +30,10 @@ jobs:
       ROLE_ARN: arn:aws:iam::887731515131:role/cr-agentic-gha-deploy
       REPO_SLUG: buchion/courserep_backend
       DEPLOY_BRANCH: cr-agentic
+      CR_AGENT_JWT_SECRET: ${{ secrets.CR_AGENT_JWT_SECRET }}
+      CR_AGENT_JWT_ISSUER: ${{ secrets.CR_AGENT_JWT_ISSUER }}
+      CR_AGENT_JWT_AUDIENCE: ${{ secrets.CR_AGENT_JWT_AUDIENCE }}
+      CR_AGENT_CORS_ORIGIN: ${{ secrets.CR_AGENT_CORS_ORIGIN }}
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v5
@@ -47,12 +44,75 @@ jobs:
       - name: Trigger remote deploy via SSM
         run: |
           set -euo pipefail
-          cat > params.json <<JSON
-          {
-            "commands": ["runuser -l ubuntu -c 'cd ~/courserep_backend && git remote set-url origin git@github.com:${REPO_SLUG}.git && git fetch origin ${DEPLOY_BRANCH} && git checkout ${DEPLOY_BRANCH} && git pull --ff-only origin ${DEPLOY_BRANCH} && cd CR_AGENTIC/docker && ./deploy.sh'"],
-            "executionTimeout": ["7200"]
+
+          DEFAULT_CORS='https://app.courserep.ng,https://app.courserep.org,https://course-rep-agent-web.pages.dev,https://agent.courserep.org,http://localhost:5173'
+          export CORS_ORIGIN_EFFECTIVE="${CR_AGENT_CORS_ORIGIN:-$DEFAULT_CORS}"
+
+          python3 <<'PY'
+          import base64, json, os, textwrap
+          from pathlib import Path
+
+          updates = {}
+          for key, env_key in [
+              ("JWT_SECRET", "CR_AGENT_JWT_SECRET"),
+              ("JWT_ISSUER", "CR_AGENT_JWT_ISSUER"),
+              ("JWT_AUDIENCE", "CR_AGENT_JWT_AUDIENCE"),
+              ("CORS_ORIGIN", "CORS_ORIGIN_EFFECTIVE"),
+          ]:
+              val = os.environ.get(env_key, "").strip()
+              if val:
+                  updates[key] = val
+
+          updates_json = json.dumps(updates)
+          repo = os.environ["REPO_SLUG"]
+          branch = os.environ["DEPLOY_BRANCH"]
+
+          script = textwrap.dedent(
+              f"""\
+              set -euo pipefail
+              cd ~/courserep_backend
+              git remote set-url origin git@github.com:{repo}.git
+              git fetch origin {branch}
+              git checkout {branch}
+              git pull --ff-only origin {branch}
+              python3 <<'PY2'
+              from pathlib import Path
+              import json
+              p = Path.home() / "courserep_backend/CR_AGENTIC/.env"
+              text = p.read_text() if p.exists() else ""
+              updates = json.loads({updates_json!r})
+              lines = text.splitlines()
+              seen = set()
+              out = []
+              for line in lines:
+                  if not line or line.lstrip().startswith("#") or "=" not in line:
+                      out.append(line)
+                      continue
+                  k = line.split("=", 1)[0].strip()
+                  if k in updates:
+                      out.append(f"{{k}}={{updates[k]}}")
+                      seen.add(k)
+                  else:
+                      out.append(line)
+              for k, v in updates.items():
+                  if k not in seen:
+                      out.append(f"{{k}}={{v}}")
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text("\\n".join(out) + "\\n")
+              print("Updated keys:", ", ".join(sorted(updates)) or "(none)")
+              PY2
+              cd CR_AGENTIC/docker
+              ./deploy.sh
+              """
+          )
+          remote_b64 = base64.b64encode(script.encode()).decode()
+          params = {
+              "commands": [f"echo {remote_b64} | base64 -d | bash"],
+              "executionTimeout": ["7200"],
           }
-          JSON
+          Path("params.json").write_text(json.dumps(params))
+          print("Wrote params.json; env keys to sync:", ", ".join(sorted(updates)) or "(none)")
+          PY
 
           CID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
@@ -63,7 +123,6 @@ jobs:
             --query 'Command.CommandId' --output text)
           echo "SSM CommandId: $CID"
 
-          # Poll until the command reaches a terminal state.
           while true; do
             sleep 20
             ST=$(aws ssm get-command-invocation \
