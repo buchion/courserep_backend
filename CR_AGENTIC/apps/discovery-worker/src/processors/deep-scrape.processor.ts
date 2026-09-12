@@ -48,6 +48,7 @@ export class DeepScrapeProcessor {
     lmsBaseUrl: string;
     portalCandidateId?: string | null;
   }): Promise<string> {
+    let home = account.lmsBaseUrl;
     if (account.portalCandidateId) {
       const candidate = await prisma.portalCandidate.findUnique({
         where: { id: account.portalCandidateId },
@@ -57,13 +58,17 @@ export class DeepScrapeProcessor {
           const u = new URL(candidate.loginUrl);
           let path = u.pathname.replace(/\/login\/?$/i, '/');
           if (!path.endsWith('/')) path += '/';
-          return path === '/' ? u.origin : `${u.origin}${path}`;
+          home = path === '/' ? u.origin : `${u.origin}${path}`;
         } catch {
-          return candidate.loginUrl;
+          home = candidate.loginUrl;
         }
       }
     }
-    return account.lmsBaseUrl;
+    // YabaTech student LMS lives under /portalplus/, not the public hub.
+    if (/yabatech\.edu\.ng/i.test(home) && !/portalplus/i.test(home)) {
+      home = 'https://portal.yabatech.edu.ng/portalplus/';
+    }
+    return home;
   }
 
   async process(job: { data: DiscoveryDeepScrapeJob }): Promise<void> {
@@ -233,10 +238,7 @@ export class DeepScrapeProcessor {
     config?: GenericPortalConfig,
   ): Promise<void> {
     const home = await this.resolvePortalHome(account);
-
-    // Session cookies are sometimes not ready in the earlier profile job; capture
-    // biodata + results here where programme scraping already succeeds.
-    await this.capturePortalplusAcademics(page, home, onboardingSessionId, userId);
+    logger.info({ onboardingSessionId, home }, 'Deep scrape courses home');
 
     await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
     const adapter = this.safeAdapter(account.lmsType);
@@ -253,7 +255,10 @@ export class DeepScrapeProcessor {
         },
       });
     }
-    logger.info({ onboardingSessionId, count: courses.length }, 'Scraped courses');
+    logger.info({ onboardingSessionId, count: courses.length, home }, 'Scraped courses');
+
+    // After courses (known-good auth path), capture biodata + semester results.
+    await this.capturePortalplusAcademics(page, home, onboardingSessionId, userId);
   }
 
   /** Retrying biodata/result capture used by profile + courses phases. */
@@ -275,13 +280,24 @@ export class DeepScrapeProcessor {
         academicLevelName?: string;
       } | null = null;
 
-      for (let attempt = 0; attempt < 3 && !profile; attempt++) {
+      // Warm session on dashboard first (same path that yields programme text).
+      try {
+        await page.goto(this.portalPage(home, 'home'), {
+          waitUntil: 'domcontentloaded',
+          timeout: 25_000,
+        });
+        await page.waitForTimeout(1000);
+      } catch (err) {
+        logger.warn({ err, onboardingSessionId }, 'home warm failed');
+      }
+
+      for (let attempt = 0; attempt < 2 && !profile; attempt++) {
         try {
           await page.goto(this.portalPage(home, 'biodata'), {
             waitUntil: 'domcontentloaded',
             timeout: 25_000,
           });
-          await page.waitForTimeout(1200 + attempt * 800);
+          await page.waitForTimeout(1500);
         } catch (err) {
           logger.warn({ err, onboardingSessionId, attempt }, 'biodata nav failed');
           continue;
